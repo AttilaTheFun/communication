@@ -171,6 +171,23 @@ final class PeerConnectionCore: @unchecked Sendable {
     }
 
     /// Closes the peer connection on the WebRTC queue and finishes events.
+    /// The local description as it currently stands.
+    ///
+    /// Worth reading *after* gathering finishes rather than taking what
+    /// `offer`/`answer` returned: the candidates are added to it as they are
+    /// discovered, and a description captured before then describes a peer
+    /// nobody can reach.
+    var localDescription: CommunicationSessionDescription? {
+        queue.sync {
+            peerConnection.localDescription.map(CommunicationSessionDescription.init)
+        }
+    }
+
+    /// How far ICE gathering has got.
+    var iceGatheringState: CommunicationICEGatheringState {
+        queue.sync { CommunicationICEGatheringState(peerConnection.iceGatheringState) }
+    }
+
     // MARK: - Data channels
 
     /// Opens a channel, or returns the existing one with that label.

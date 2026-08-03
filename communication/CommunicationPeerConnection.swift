@@ -69,6 +69,17 @@ public actor CommunicationPeerConnection {
         self.events = core.events
     }
 
+    /// The local description as it currently stands, including whatever ICE
+    /// candidates have been gathered so far.
+    public var localDescription: CommunicationSessionDescription? {
+        core.localDescription
+    }
+
+    /// How far ICE gathering has got.
+    public var iceGatheringState: CommunicationICEGatheringState {
+        core.iceGatheringState
+    }
+
     // MARK: - Data channels
 
     /// Opens a data channel.
