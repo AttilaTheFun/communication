@@ -1,0 +1,183 @@
+import Foundation
+/// A Swift-concurrency-friendly wrapper around one WebRTC peer connection.
+///
+/// `CommunicationPeerConnection` is the root type of the `Communication`
+/// module. It is a thin, value-oriented Swift wrapper around a single WebRTC
+/// (Web Real-Time Communication) peer connection. Use this type when an
+/// application or higher-level package wants to own call membership and
+/// signalling itself, but does not want to work directly with raw WebRTC types.
+///
+/// A peer connection represents the WebRTC transport relationship between this
+/// local process and one remote peer, client, device, or session. It can carry
+/// multiple flows over that relationship, including audio tracks, video tracks,
+/// and data channels.
+///
+/// The connection is configured with `CommunicationConfiguration`,
+/// which includes ICE (Interactive Connectivity Establishment) server and policy settings.
+/// ICE is WebRTC's process for discovering a usable network path between peers.
+///
+/// ICE servers are usually STUN (Session Traversal Utilities for NAT) servers,
+/// which help peers discover their public network address,
+/// or TURN (Traversal Using Relays around NAT) servers,
+/// which relay media when a direct path is unavailable.
+///
+/// Signalling is intentionally outside this type.
+///
+/// Callers create SDP (Session Description Protocol) offers and answers with `offer(options:)`
+/// and `answer(options:)`, send the resulting `CommunicationSessionDescription`
+/// values to a remote peer through their own signalling transport, and apply
+/// remote descriptions with `setRemoteDescription(_:)`.
+///
+/// Likewise, local ICE candidates arrive through `events` as `CommunicationEvent.localCandidateDiscovered`
+/// and should be sent to the remote peer; remote ICE candidates are applied with
+/// `addRemoteCandidate(_:)`.
+///
+/// The event stream publishes `CommunicationEvent` values for negotiation,
+/// connection-state changes, ICE gathering and connectivity state, data-channel
+/// openings, and remote media attachment. Audio controls on this type affect
+/// only this peer connection: local microphone mute/gain controls the outgoing
+/// audio track, while remote playback mute/volume controls how this process
+/// hears the remote peer.
+public actor CommunicationPeerConnection {
+    /// Internal owner of the raw WebRTC peer connection.
+    private let core: PeerConnectionCore
+
+    /// Events emitted by the underlying peer connection.
+    public nonisolated let events: AsyncStream<CommunicationEvent>
+
+    /// Creates a peer connection.
+    ///
+    /// - Parameter configuration: The ICE and peer connection configuration.
+    public init(configuration: CommunicationConfiguration = CommunicationConfiguration()) throws {
+        let core = try PeerConnectionCore(configuration: configuration)
+        self.core = core
+        self.events = core.events
+    }
+
+    /// Creates a peer connection with control over whether a local audio track is attached.
+    ///
+    /// This is used by package tests and internal implementation seams.
+    init(
+        configuration: CommunicationConfiguration = CommunicationConfiguration(),
+        createsLocalAudioTrack: Bool
+    ) throws {
+        let core = try PeerConnectionCore(
+            configuration: configuration,
+            createsLocalAudioTrack: createsLocalAudioTrack
+        )
+        self.core = core
+        self.events = core.events
+    }
+
+    // MARK: - Data channels
+
+    /// Opens a data channel.
+    ///
+    /// Only one side calls this; the other receives the same channel through
+    /// `dataChannelOpened` and can `send` on it without opening anything. By
+    /// convention the offering side opens the channel before creating its
+    /// offer, so the channel is negotiated as part of that exchange.
+    public func openDataChannel(
+        label: String,
+        configuration: CommunicationDataChannelConfiguration = CommunicationDataChannelConfiguration()
+    ) throws {
+        try core.openDataChannel(label: label, configuration: configuration)
+    }
+
+    /// Sends text on a data channel.
+    ///
+    /// With no label, sends on the only open channel — unambiguous for the
+    /// common case of a connection with a single channel, and an error rather
+    /// than a guess when there are several.
+    public func send(text: String, on label: String? = nil) throws {
+        try core.send(.text(text), label: label)
+    }
+
+    /// Sends binary data on a data channel.
+    public func send(data: Data, on label: String? = nil) throws {
+        try core.send(.binary(data), label: label)
+    }
+
+    /// Creates an SDP offer.
+    ///
+    /// - Parameter options: Media and ICE negotiation options.
+    /// - Returns: The generated local session description.
+    public func offer(
+        options: CommunicationOfferOptions = CommunicationOfferOptions()
+    ) async throws -> CommunicationSessionDescription {
+        try await core.offer(options: options)
+    }
+
+    /// Creates an SDP answer.
+    ///
+    /// - Parameter options: Media and ICE negotiation options.
+    /// - Returns: The generated local session description.
+    public func answer(
+        options: CommunicationAnswerOptions = CommunicationAnswerOptions()
+    ) async throws -> CommunicationSessionDescription {
+        try await core.answer(options: options)
+    }
+
+    /// Applies a local session description to the peer connection.
+    ///
+    /// - Parameter description: The local offer or answer.
+    public func setLocalDescription(
+        _ description: CommunicationSessionDescription
+    ) async throws {
+        try await core.setLocalDescription(description)
+    }
+
+    /// Applies a remote session description to the peer connection.
+    ///
+    /// - Parameter description: The remote offer or answer.
+    public func setRemoteDescription(
+        _ description: CommunicationSessionDescription
+    ) async throws {
+        try await core.setRemoteDescription(description)
+    }
+
+    /// Adds an ICE candidate received from the remote peer.
+    ///
+    /// - Parameter candidate: The remote ICE candidate.
+    public func addRemoteCandidate(_ candidate: CommunicationICECandidate) async throws {
+        try await core.addRemoteCandidate(candidate)
+    }
+
+    /// Requests an ICE restart on the underlying peer connection.
+    public func restartICE() {
+        core.restartICE()
+    }
+
+    /// Closes the peer connection and finishes its event stream.
+    public func close() {
+        core.close()
+    }
+
+    /// Mutes or unmutes the local outgoing audio track.
+    ///
+    /// - Parameter muted: Whether outgoing local audio should be muted.
+    public func setLocalAudioMuted(_ muted: Bool) {
+        core.setLocalAudioMuted(muted)
+    }
+
+    /// Sets the local outgoing audio gain.
+    ///
+    /// - Parameter gain: A value in `0...1`; values outside the range are clamped.
+    public func setLocalAudioGain(_ gain: Float) {
+        core.setLocalAudioGain(gain)
+    }
+
+    /// Mutes or unmutes local playback of remote audio.
+    ///
+    /// - Parameter muted: Whether remote audio playback should be muted locally.
+    public func setRemoteAudioPlaybackMuted(_ muted: Bool) {
+        core.setRemoteAudioPlaybackMuted(muted)
+    }
+
+    /// Sets local playback volume for remote audio.
+    ///
+    /// - Parameter volume: A value in `0...1`; values outside the range are clamped.
+    public func setRemoteAudioPlaybackVolume(_ volume: Float) {
+        core.setRemoteAudioPlaybackVolume(volume)
+    }
+}

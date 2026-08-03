@@ -1,0 +1,23 @@
+"""Communication: a Swift wrapper over WebRTC for Apple platforms.
+
+Extracted from app_engine so it can be shared. WebRTC ships as a prebuilt
+XCFramework, so it is fetched directly rather than through SwiftPM: going via
+rules_swift_package_manager drags in gazelle and rules_go for a dependency
+that is ultimately one zip file, and that Go toolchain does not survive Bazel
+9 ("'Facts' value has no field or method 'clear'"). Consumers of this module
+get a WebRTC target and no Go.
+"""
+
+module(
+    name = "communication",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "apple_support", version = "2.8.0")
+bazel_dep(name = "rules_swift", version = "3.6.1")
+bazel_dep(name = "rules_apple", version = "4.5.3")
+
+webrtc = use_extension("//third_party/webrtc:extensions.bzl", "webrtc")
+use_repo(webrtc, "webrtc")

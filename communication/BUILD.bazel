@@ -1,0 +1,35 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+swift_library(
+    name = "communication",
+    srcs = [
+        "AsyncPipe.swift",
+        "CommunicationAnswerOptions.swift",
+        "CommunicationCandidateNetworkPolicy.swift",
+        "CommunicationConfiguration.swift",
+        "CommunicationConnectionState.swift",
+        "DataChannelRegistry.swift",
+        "CommunicationDataChannel.swift",
+        "CommunicationError.swift",
+        "CommunicationEvent.swift",
+        "CommunicationICECandidate.swift",
+        "CommunicationICEConnectionState.swift",
+        "CommunicationICEGatheringState.swift",
+        "CommunicationICEServer.swift",
+        "CommunicationICETransportPolicy.swift",
+        "CommunicationOfferOptions.swift",
+        "CommunicationPeerConnection.swift",
+        "CommunicationSessionDescription.swift",
+        "CommunicationSignalingState.swift",
+        "PeerConnectionCore.swift",
+        "PeerConnectionDelegate.swift",
+    ],
+    library_evolution = True,
+    module_name = "Communication",
+    # WebRTC stays private: callers see the Communication vocabulary types, not
+    # RTC* ones, so the framework is an implementation detail they cannot
+    # accidentally depend on.
+    private_deps = ["@webrtc//:WebRTC"],
+    visibility = ["//visibility:public"],
+    deps = [],  # keep
+)

@@ -1,0 +1,6 @@
+common --enable_bzlmod
+
+build --apple_generate_dsym=false
+build --macos_minimum_os=14.0
+build --host_macos_minimum_os=14.0
+build --ios_minimum_os=17.0
