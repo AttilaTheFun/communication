@@ -19,11 +19,17 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// Delegate retained for the lifetime of the peer connection.
     private let delegate: PeerConnectionDelegate
 
-    /// The local audio source, if this connection owns one.
-    private let localAudioSource: RTCAudioSource?
+    /// The local audio source, if this connection owns one. Mutable because
+    /// a call can begin and end mid-connection: the audio track is added and
+    /// removed on the live peer connection rather than fixed at setup.
+    private var localAudioSource: RTCAudioSource?
 
     /// The local outgoing audio track, if this connection owns one.
-    private let localAudioTrack: RTCAudioTrack?
+    private var localAudioTrack: RTCAudioTrack?
+
+    /// The RTP sender for the local audio track, kept so the track can be
+    /// removed again when the call ends.
+    private var localAudioSender: RTCRtpSender?
 
     /// Pipe used to publish delegate events as an async stream.
     private let pipe = AsyncPipe<CommunicationEvent>()
@@ -72,7 +78,36 @@ final class PeerConnectionCore: @unchecked Sendable {
             )
         }
 
+        self.sslRuntime = sslRuntime
+        self.factory = factory
+        self.delegate = delegate
+        self.peerConnection = peerConnection
+
         if createsLocalAudioTrack {
+            guard addLocalAudioTrack() else {
+                peerConnection.close()
+                throw CommunicationError(
+                    code: .initializationFailed,
+                    message: "Unable to add a local audio track to the WebRTC peer connection."
+                )
+            }
+        }
+    }
+
+    // MARK: - Mid-call audio
+    //
+    // Audio is added and removed on the live connection, so a data-only
+    // session can become a call and end again without tearing down the peer
+    // connection or the chat that rides it. Each change alters the set of
+    // m-lines, so the caller must renegotiate afterwards (offer/answer).
+
+    /// Adds a local microphone track if there isn't one already. Returns
+    /// whether a track is now present. Call `offer`/`answer` afterwards — the
+    /// SDP changed.
+    @discardableResult
+    func addLocalAudioTrack() -> Bool {
+        queue.sync {
+            if localAudioTrack != nil { return true }
             let audioSource = factory.audioSource(
                 with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
             )
@@ -80,26 +115,31 @@ final class PeerConnectionCore: @unchecked Sendable {
                 with: audioSource,
                 trackId: "communication-audio-\(UUID().uuidString)"
             )
-
-            guard peerConnection.add(audioTrack, streamIds: ["communication"]) != nil else {
-                peerConnection.close()
-                throw CommunicationError(
-                    code: .initializationFailed,
-                    message: "Unable to add a local audio track to the WebRTC peer connection."
-                )
+            guard let sender = peerConnection.add(audioTrack, streamIds: ["communication"]) else {
+                return false
             }
-
-            self.localAudioSource = audioSource
-            self.localAudioTrack = audioTrack
-        } else {
-            self.localAudioSource = nil
-            self.localAudioTrack = nil
+            localAudioSource = audioSource
+            localAudioTrack = audioTrack
+            localAudioSender = sender
+            return true
         }
+    }
 
-        self.sslRuntime = sslRuntime
-        self.factory = factory
-        self.delegate = delegate
-        self.peerConnection = peerConnection
+    /// Removes the local microphone track if present. Renegotiate afterwards.
+    func removeLocalAudioTrack() {
+        queue.sync {
+            if let sender = localAudioSender {
+                peerConnection.removeTrack(sender)
+            }
+            localAudioSender = nil
+            localAudioTrack = nil
+            localAudioSource = nil
+        }
+    }
+
+    /// Whether a call is currently active on this connection.
+    var hasLocalAudio: Bool {
+        queue.sync { localAudioTrack != nil }
     }
 
     /// Closes WebRTC resources and finishes event delivery.
@@ -239,9 +279,11 @@ final class PeerConnectionCore: @unchecked Sendable {
         }
     }
 
-    /// Enables or disables the local outgoing audio track.
+    /// Enables or disables the local outgoing audio track. Reads the track
+    /// on the queue rather than capturing it, so it affects whatever track is
+    /// attached now — a call may have started after this object was created.
     func setLocalAudioMuted(_ muted: Bool) {
-        queue.async { [localAudioTrack] in
+        queue.async { [self] in
             localAudioTrack?.isEnabled = !muted
         }
     }
@@ -249,7 +291,7 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// Maps `0...1` gain into WebRTC's audio source volume range.
     func setLocalAudioGain(_ gain: Float) {
         let volume = Double(Self.clampUnit(gain)) * 10
-        queue.async { [localAudioSource] in
+        queue.async { [self] in
             localAudioSource?.volume = volume
         }
     }

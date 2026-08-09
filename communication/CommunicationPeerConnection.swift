@@ -47,19 +47,16 @@ public actor CommunicationPeerConnection {
 
     /// Creates a peer connection.
     ///
-    /// - Parameter configuration: The ICE and peer connection configuration.
-    public init(configuration: CommunicationConfiguration = CommunicationConfiguration()) throws {
-        let core = try PeerConnectionCore(configuration: configuration)
-        self.core = core
-        self.events = core.events
-    }
-
-    /// Creates a peer connection with control over whether a local audio track is attached.
-    ///
-    /// This is used by package tests and internal implementation seams.
-    init(
+    /// - Parameters:
+    ///   - configuration: The ICE and peer connection configuration.
+    ///   - createsLocalAudioTrack: Whether to attach a microphone track at
+    ///     setup. Defaults to `false`: a connection that starts as data-only
+    ///     (a chat that may later place a call) should add audio when the
+    ///     call begins via `addLocalAudio()`, not carry a live mic from the
+    ///     start.
+    public init(
         configuration: CommunicationConfiguration = CommunicationConfiguration(),
-        createsLocalAudioTrack: Bool
+        createsLocalAudioTrack: Bool = false
     ) throws {
         let core = try PeerConnectionCore(
             configuration: configuration,
@@ -162,6 +159,32 @@ public actor CommunicationPeerConnection {
     /// Closes the peer connection and finishes its event stream.
     public func close() {
         core.close()
+    }
+
+    // MARK: - Mid-call audio
+
+    /// Adds a local microphone track to the live connection, turning a
+    /// data-only session into a call. The set of media lines changes, so the
+    /// caller must renegotiate afterwards: create a new offer (or answer),
+    /// apply it locally, and exchange it with the peer.
+    ///
+    /// - Returns: Whether a local audio track is now attached.
+    @discardableResult
+    public func addLocalAudio() -> Bool {
+        core.addLocalAudioTrack()
+    }
+
+    /// Removes the local microphone track, ending the call while leaving the
+    /// connection and its data channels intact. Renegotiate afterwards, as
+    /// with `addLocalAudio()`.
+    public func removeLocalAudio() {
+        core.removeLocalAudioTrack()
+    }
+
+    /// Whether a local microphone track is currently attached — i.e. whether
+    /// a call is in progress on this connection.
+    public var hasLocalAudio: Bool {
+        core.hasLocalAudio
     }
 
     /// Mutes or unmutes the local outgoing audio track.
