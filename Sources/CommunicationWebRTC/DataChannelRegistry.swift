@@ -1,5 +1,7 @@
 import Foundation
 
+import Communication
+
 @preconcurrency internal import WebRTC
 
 /// Owns the data channels on a peer connection and turns their callbacks into

@@ -1,5 +1,3 @@
-@preconcurrency internal import WebRTC
-
 /// WebRTC peer connection configuration expressed without exposing WebRTC types.
 public struct CommunicationConfiguration: Sendable, Codable, Equatable {
     /// The STUN or TURN servers used while gathering ICE candidates.
@@ -37,20 +35,5 @@ public struct CommunicationConfiguration: Sendable, Codable, Equatable {
         self.candidateNetworkPolicy = candidateNetworkPolicy
         self.gathersIceContinually = gathersIceContinually
         self.allowsIPv6OnWiFi = allowsIPv6OnWiFi
-    }
-}
-
-/// Conversion from public Swift configuration to raw WebRTC configuration.
-extension CommunicationConfiguration {
-    /// The raw WebRTC configuration consumed by `RTCPeerConnectionFactory`.
-    var rtcConfiguration: RTCConfiguration {
-        let configuration = RTCConfiguration()
-        configuration.iceServers = iceServers.map(\.rtcIceServer)
-        configuration.iceTransportPolicy = iceTransportPolicy.rtcIceTransportPolicy
-        configuration.candidateNetworkPolicy = candidateNetworkPolicy.rtcCandidateNetworkPolicy
-        configuration.continualGatheringPolicy = gathersIceContinually ? .gatherContinually : .gatherOnce
-        configuration.disableIPV6OnWiFi = !allowsIPv6OnWiFi
-        configuration.sdpSemantics = .unifiedPlan
-        return configuration
     }
 }

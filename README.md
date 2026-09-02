@@ -1,40 +1,45 @@
 # Communication
 
-A Swift wrapper over WebRTC for Apple platforms — peer connections, SDP,
-ICE, audio, and data channels, expressed in Swift concurrency and Swift
-vocabulary types rather than Objective-C callbacks and `RTC*` classes.
+A consistent, idiomatic, async, strict-concurrency-compatible Swift API for
+WebRTC, meant to work across every platform Swift itself supports.
 
-Extracted from `app_engine` so it can be shared. WebRTC itself stays a private
-dependency: callers see `CommunicationPeerConnection`, never `RTCPeerConnection`.
+## Modules
 
-## Using it
+- **`Communication`** — the API. The currency types (configuration, ICE
+  servers and candidates, session descriptions, data-channel options, events,
+  errors) and the `CommunicationPeerConnection` / `CommunicationConnector`
+  protocols. It imports nothing but Foundation, so it compiles anywhere Swift
+  does; higher-level code holds `any CommunicationPeerConnection` and stays
+  oblivious to the platform underneath.
 
-```starlark
-bazel_dep(name = "communication", version = "0.1.0")
-git_override(
-    module_name = "communication",
-    remote = "https://github.com/AttilaTheFun/communication.git",
-    commit = "<sha>",
+- **`CommunicationWebRTC`** — the Apple (iOS, macOS) implementation, backed by
+  Google's WebRTC through the [stasel/WebRTC][stasel] binary distribution.
+  `WebRTCConnector` makes `WebRTCPeerConnection`s.
+
+```swift
+import Communication
+import CommunicationWebRTC
+
+let connector = WebRTCConnector()
+let peer = try connector.makePeerConnection(
+    configuration: CommunicationConfiguration(
+        iceServers: [.stun("stun:stun.l.google.com:19302")]
+    )
 )
+try await peer.openDataChannel(label: "chat")
+let offer = try await peer.offer()
+// …carry `offer` to the remote peer over your own signalling transport,
+// apply what comes back with `setRemoteDescription`, and read
+// `peer.events` for ICE candidates and state.
 ```
 
-Then depend on `@communication//communication`.
+Signalling is deliberately outside the API: you own how offers, answers and
+ICE candidates reach the other side.
 
-## The WebRTC dependency
+## Platforms
 
-WebRTC ships as a prebuilt XCFramework, so it is fetched directly with
-`http_archive` rather than through SwiftPM. Going via
-`rules_swift_package_manager` pulls in gazelle and rules_go for what is
-ultimately one zip file, and that Go toolchain does not survive Bazel 9
-(`'Facts' value has no field or method 'clear'`). Consumers get a WebRTC
-target and no Go.
+`Communication` builds everywhere. `CommunicationWebRTC` is Apple-only today;
+Android, Linux and Windows implementations of the same API are planned, either
+as further targets here or by adapting a platform stack behind the protocol.
 
-The pin — AttilaTheFun's fork at 148.0.0, carrying an M148 macOS header fix
-not yet upstream in `stasel/WebRTC` — matches what `app_engine` resolves
-through SwiftPM, so both build against the identical binary.
-
-## Data channels
-
-`openDataChannel(label:)` on one side; the other receives the same channel
-through the `dataChannelOpened` event and can `send` without opening
-anything. Text and binary are kept distinct on the wire, as WebRTC does.
+[stasel]: https://github.com/stasel/WebRTC

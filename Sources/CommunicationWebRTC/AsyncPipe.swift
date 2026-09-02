@@ -1,5 +1,7 @@
 import Foundation
 
+import Communication
+
 /// A small lock-protected wrapper around `AsyncStream` used by delegate callbacks.
 final class AsyncPipe<Element: Sendable>: @unchecked Sendable {
     /// Protects access to the stream continuation, which may be touched from WebRTC callbacks.

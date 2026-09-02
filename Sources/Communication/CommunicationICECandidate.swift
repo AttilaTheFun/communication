@@ -1,5 +1,3 @@
-@preconcurrency internal import WebRTC
-
 /// A WebRTC ICE candidate represented as Swift value data.
 public struct CommunicationICECandidate: Sendable, Codable, Equatable, Hashable {
     /// The SDP candidate attribute.
@@ -31,27 +29,5 @@ public struct CommunicationICECandidate: Sendable, Codable, Equatable, Hashable 
         self.sdpMLineIndex = sdpMLineIndex
         self.sdpMid = sdpMid
         self.serverURL = serverURL
-    }
-}
-
-/// Conversion between Swift ICE candidates and WebRTC ICE candidates.
-extension CommunicationICECandidate {
-    /// Creates a Swift candidate from a WebRTC candidate.
-    init(_ candidate: RTCIceCandidate) {
-        self.init(
-            sdp: candidate.sdp,
-            sdpMLineIndex: candidate.sdpMLineIndex,
-            sdpMid: candidate.sdpMid,
-            serverURL: candidate.serverUrl
-        )
-    }
-
-    /// The raw WebRTC candidate represented by this value.
-    var rtcIceCandidate: RTCIceCandidate {
-        RTCIceCandidate(
-            sdp: sdp,
-            sdpMLineIndex: sdpMLineIndex,
-            sdpMid: sdpMid
-        )
     }
 }

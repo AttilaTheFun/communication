@@ -1,7 +1,8 @@
 import Communication
+import CommunicationWebRTC
 import XCTest
 
-final class CommunicationPeerConnectionValueTests: XCTestCase {
+final class CommunicationValueTests: XCTestCase {
     func testSessionDescriptionCodableRoundTrip() throws {
         let description = CommunicationSessionDescription(kind: .offer, sdp: "v=0")
 
@@ -84,11 +85,39 @@ final class CommunicationPeerConnectionValueTests: XCTestCase {
     }
 
     func testPeerConnectionCanBeCreatedAndClosedRepeatedly() async throws {
+        let connector = WebRTCConnector()
         for _ in 0..<3 {
-            do {
-                let peer = try CommunicationPeerConnection(configuration: CommunicationConfiguration(iceServers: []))
-                await peer.close()
-            }
+            let peer = try connector.makePeerConnection(
+                configuration: CommunicationConfiguration(iceServers: [])
+            )
+            await peer.close()
         }
+    }
+
+    /// The whole protocol path through the split: a data-channel offer from
+    /// one WebRTC-backed peer, answered by another, exchanging descriptions
+    /// as `any CommunicationPeerConnection` values.
+    func testOfferAnswerRoundTripThroughTheProtocol() async throws {
+        let connector = WebRTCConnector()
+        let caller: any CommunicationPeerConnection = try connector.makePeerConnection()
+        let callee: any CommunicationPeerConnection = try connector.makePeerConnection()
+        defer { Task { await caller.close(); await callee.close() } }
+
+        try await caller.openDataChannel(label: "chat")
+        let offer = try await caller.offer()
+        XCTAssertEqual(offer.kind, .offer)
+        XCTAssertFalse(offer.sdp.isEmpty)
+
+        try await caller.setLocalDescription(offer)
+        try await callee.setRemoteDescription(offer)
+        let answer = try await callee.answer()
+        XCTAssertEqual(answer.kind, .answer)
+        try await callee.setLocalDescription(answer)
+        try await caller.setRemoteDescription(answer)
+
+        // Descriptions applied cleanly: both sides moved past the initial
+        // signalling state that a bare, un-negotiated connection sits in.
+        let callerSDP = await caller.localDescription
+        XCTAssertNotNil(callerSDP)
     }
 }

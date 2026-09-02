@@ -1,5 +1,3 @@
-@preconcurrency internal import WebRTC
-
 /// A STUN or TURN server used for ICE gathering.
 public struct CommunicationICEServer: Sendable, Codable, Equatable, Hashable {
     /// The ICE server URL strings.
@@ -45,18 +43,6 @@ public struct CommunicationICEServer: Sendable, Codable, Equatable, Hashable {
     ) -> Self {
         Self(
             urls: urls,
-            username: username,
-            credential: credential
-        )
-    }
-}
-
-/// Conversion from Swift ICE server values to WebRTC ICE servers.
-extension CommunicationICEServer {
-    /// The raw WebRTC ICE server represented by this value.
-    var rtcIceServer: RTCIceServer {
-        RTCIceServer(
-            urlStrings: urls,
             username: username,
             credential: credential
         )

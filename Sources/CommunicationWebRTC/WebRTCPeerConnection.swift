@@ -1,11 +1,14 @@
 import Foundation
-/// A Swift-concurrency-friendly wrapper around one WebRTC peer connection.
+
+import Communication
+
+/// The Apple implementation of `CommunicationPeerConnection`, backed by
+/// Google's WebRTC (the stasel/WebRTC binary distribution).
 ///
-/// `CommunicationPeerConnection` is the root type of the `Communication`
-/// module. It is a thin, value-oriented Swift wrapper around a single WebRTC
-/// (Web Real-Time Communication) peer connection. Use this type when an
-/// application or higher-level package wants to own call membership and
-/// signalling itself, but does not want to work directly with raw WebRTC types.
+/// A thin, value-oriented Swift wrapper around a single WebRTC peer
+/// connection. Use this type when an application or higher-level package
+/// wants to own call membership and signalling itself, but does not want to
+/// work directly with raw WebRTC types.
 ///
 /// A peer connection represents the WebRTC transport relationship between this
 /// local process and one remote peer, client, device, or session. It can carry
@@ -38,7 +41,7 @@ import Foundation
 /// only this peer connection: local microphone mute/gain controls the outgoing
 /// audio track, while remote playback mute/volume controls how this process
 /// hears the remote peer.
-public actor CommunicationPeerConnection {
+public actor WebRTCPeerConnection: CommunicationPeerConnection {
     /// Internal owner of the raw WebRTC peer connection.
     private let core: PeerConnectionCore
 

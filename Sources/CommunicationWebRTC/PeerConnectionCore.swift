@@ -1,5 +1,7 @@
 import Foundation
 
+import Communication
+
 @preconcurrency internal import WebRTC
 
 /// Internal owner of the raw WebRTC peer connection and related audio state.

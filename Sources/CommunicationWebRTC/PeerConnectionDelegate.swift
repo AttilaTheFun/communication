@@ -1,5 +1,7 @@
 import Foundation
 
+import Communication
+
 @preconcurrency internal import WebRTC
 
 /// WebRTC delegate adapter that converts callbacks into `CommunicationEvent` values.
