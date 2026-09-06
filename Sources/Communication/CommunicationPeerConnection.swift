@@ -114,3 +114,10 @@ public protocol CommunicationConnector: Sendable {
     /// backend's underlying connection.
     func makePeerConnection(configuration: CommunicationConfiguration) throws -> any CommunicationPeerConnection
 }
+
+extension CommunicationConnector {
+    /// A peer connection with the default configuration.
+    public func makePeerConnection() throws -> any CommunicationPeerConnection {
+        try makePeerConnection(configuration: CommunicationConfiguration())
+    }
+}
