@@ -29,12 +29,11 @@ public enum CommunicationEvent: Sendable, Equatable {
 
     /// A data channel changed state.
     case dataChannelStateChanged(label: String, state: CommunicationDataChannelState)
+    /// `track`: a receiver's track arrived; find it through `receivers`.
+    case trackAdded(kind: CommunicationMediaKind, trackID: String)
 
-    /// Remote media became available.
-    case remoteMediaAdded
-
-    /// Remote media was removed.
-    case remoteMediaRemoved
+    /// A receiver's track went away.
+    case trackRemoved(trackID: String)
 }
 
 extension CommunicationEvent: CustomStringConvertible {
@@ -66,10 +65,10 @@ extension CommunicationEvent: CustomStringConvertible {
             "Data channel \(label) state: \(state.rawValue)"
         case let .dataChannelOpened(label):
             "Data channel opened: \(label)"
-        case .remoteMediaAdded:
-            "Remote media added"
-        case .remoteMediaRemoved:
-            "Remote media removed"
+        case let .trackAdded(kind, trackID):
+            "Track added: \(kind.rawValue) \(trackID)"
+        case let .trackRemoved(trackID):
+            "Track removed: \(trackID)"
         }
     }
 }

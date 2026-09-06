@@ -15,10 +15,9 @@ import), `Sources/CommunicationWebRTC` (the backend), `Tests/`,
 
 ## Rules
 
-- No media here. Microphone, camera, playback and video views are the
-  separate, private `CommunicationCalling` package, which reaches the raw
-  WebRTC objects through `WebRTCPeerConnection.withUnderlying` and
-  `setRemoteTrackHandler`. Do not add audio or video API to the protocol.
+- Media is in scope when it is in the WebRTC or Media Capture specs (tracks,
+  senders, receivers, transceivers, getUserMedia). Call semantics are not:
+  those belong to the Convo Protocol package.
 - The API module imports no WebRTC types; the backend imports WebRTC as
   `internal import` and converts at the boundary (`RTCConversions.swift`).
 - Every public method is `async` or an actor member; events are an

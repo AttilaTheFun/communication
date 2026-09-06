@@ -12,18 +12,13 @@ final class PeerConnectionDelegate: NSObject, RTCPeerConnectionDelegate, @unchec
     /// Called when the remote opens a channel, so the registry can own it.
     private let adoptDataChannel: @Sendable (RTCDataChannel) -> Void
 
-    /// Called when a remote track arrives, so video renderers can attach.
-    private let adoptRemoteTrack: @Sendable (RTCMediaStreamTrack) -> Void
-
     /// Creates a delegate adapter.
     init(
         emit: @escaping @Sendable (CommunicationEvent) -> Void,
-        adoptDataChannel: @escaping @Sendable (RTCDataChannel) -> Void = { _ in },
-        adoptRemoteTrack: @escaping @Sendable (RTCMediaStreamTrack) -> Void = { _ in }
+        adoptDataChannel: @escaping @Sendable (RTCDataChannel) -> Void = { _ in }
     ) {
         self.emit = emit
         self.adoptDataChannel = adoptDataChannel
-        self.adoptRemoteTrack = adoptRemoteTrack
     }
 
     /// Forwards signalling-state changes.
@@ -39,7 +34,7 @@ final class PeerConnectionDelegate: NSObject, RTCPeerConnectionDelegate, @unchec
         _ peerConnection: RTCPeerConnection,
         didAdd stream: RTCMediaStream
     ) {
-        emit(.remoteMediaAdded)
+        // Unified Plan: the receiver callback below reports the track.
     }
 
     /// Forwards legacy stream-remove callbacks as remote media removal.
@@ -47,7 +42,7 @@ final class PeerConnectionDelegate: NSObject, RTCPeerConnectionDelegate, @unchec
         _ peerConnection: RTCPeerConnection,
         didRemove stream: RTCMediaStream
     ) {
-        emit(.remoteMediaRemoved)
+        // See above.
     }
 
     /// Forwards WebRTC negotiation-needed callbacks.
@@ -111,8 +106,8 @@ final class PeerConnectionDelegate: NSObject, RTCPeerConnectionDelegate, @unchec
         didAdd rtpReceiver: RTCRtpReceiver,
         streams mediaStreams: [RTCMediaStream]
     ) {
-        if let track = rtpReceiver.track { adoptRemoteTrack(track) }
-        emit(.remoteMediaAdded)
+        guard let track = rtpReceiver.track else { return }
+        emit(.trackAdded(kind: track.kind == kRTCMediaStreamTrackKindVideo ? .video : .audio, trackID: track.trackId))
     }
 
     /// Forwards Unified Plan receiver removals as remote media removal.
@@ -120,6 +115,6 @@ final class PeerConnectionDelegate: NSObject, RTCPeerConnectionDelegate, @unchec
         _ peerConnection: RTCPeerConnection,
         didRemove rtpReceiver: RTCRtpReceiver
     ) {
-        emit(.remoteMediaRemoved)
+        if let track = rtpReceiver.track { emit(.trackRemoved(trackID: track.trackId)) }
     }
 }

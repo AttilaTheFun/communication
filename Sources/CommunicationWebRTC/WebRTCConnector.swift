@@ -8,4 +8,8 @@ public struct WebRTCConnector: CommunicationConnector {
     public func makePeerConnection(configuration: CommunicationConfiguration) throws -> any CommunicationPeerConnection {
         try WebRTCPeerConnection(configuration: configuration)
     }
+
+    public func makeMediaDevices() throws -> any CommunicationMediaDevices {
+        try WebRTCMediaDevices()
+    }
 }

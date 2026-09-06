@@ -6,16 +6,12 @@ import Communication
 
 /// Internal owner of the raw WebRTC peer connection: negotiation, ICE,
 /// data channels. Media lives in a separate package that reaches the raw
-/// connection through `withUnderlying` and hears remote tracks through
-/// `remoteTrackHandler`.
 final class PeerConnectionCore: @unchecked Sendable {
     /// Serializes calls into the WebRTC peer connection.
     private let queue = DispatchQueue(label: "Communication.PeerConnection")
 
-    /// Instance-owned WebRTC SSL initialization lifetime.
-    private let sslRuntime: WebRTCSSLRuntime
-
-    /// Factory that creates peer connections, sources, and tracks.
+    /// The process-wide factory (`WebRTCRuntime`), shared with media devices so
+    /// their tracks can be added to any connection.
     private let factory: RTCPeerConnectionFactory
 
     /// The raw WebRTC peer connection.
@@ -23,9 +19,6 @@ final class PeerConnectionCore: @unchecked Sendable {
 
     /// Delegate retained for the lifetime of the peer connection.
     private let delegate: PeerConnectionDelegate
-
-    /// Called with each remote track the peer adds, for the media package.
-    private var remoteTrackHandler: (@Sendable (RTCMediaStreamTrack) -> Void)?
 
     /// Pipe used to publish delegate events as an async stream.
     private let pipe = AsyncPipe<CommunicationEvent>()
@@ -43,21 +36,15 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// - Parameters:
     ///   - configuration: Swift configuration converted to `RTCConfiguration`.
     init(configuration: CommunicationConfiguration) throws {
-        let sslRuntime = try WebRTCSSLRuntime()
-
-        let factory = RTCPeerConnectionFactory()
+        let factory = try WebRTCRuntime.shared.factory
         let dataChannels = DataChannelRegistry { [pipe] event in
             pipe.yield(event)
         }
-        // The delegate exists before the core does; the box lets it reach
-        // the core once there is one.
-        let remoteTrackBox = RemoteTrackBox()
         let delegate = PeerConnectionDelegate(
             emit: { [pipe] event in pipe.yield(event) },
             // A channel the remote opened arrives here; adopting it makes the
             // two sides symmetric from the caller's point of view.
-            adoptDataChannel: { [dataChannels] channel in dataChannels.adopt(channel) },
-            adoptRemoteTrack: { track in remoteTrackBox.handler?(track) }
+            adoptDataChannel: { [dataChannels] channel in dataChannels.adopt(channel) }
         )
         self.dataChannels = dataChannels
 
@@ -74,30 +61,47 @@ final class PeerConnectionCore: @unchecked Sendable {
             )
         }
 
-        self.sslRuntime = sslRuntime
         self.factory = factory
         self.delegate = delegate
         self.peerConnection = peerConnection
-        remoteTrackBox.handler = { [weak self] track in self?.adoptRemoteTrack(track) }
     }
 
-    // MARK: - Media escape hatch
+    // MARK: - Media
 
-    /// Runs `body` on the connection's serial queue with the raw peer
-    /// connection and factory. The media package adds and removes tracks
-    /// here; nothing in this package interprets them.
-    func withUnderlying<T>(_ body: (RTCPeerConnection, RTCPeerConnectionFactory) throws -> T) rethrows -> T {
-        try queue.sync { try body(peerConnection, factory) }
+    func addTrack(_ track: any CommunicationMediaStreamTrack, streamIDs: [String]) throws -> any CommunicationRtpSender {
+        guard let raw = (track as? WebRTCMediaTrack)?.raw else {
+            throw CommunicationError(code: .invalidState, message: "track is not from this backend")
+        }
+        return try queue.sync {
+            guard let sender = peerConnection.add(raw, streamIds: streamIDs) else {
+                throw CommunicationError(code: .invalidState, message: "could not add track")
+            }
+            return WebRTCRtpSender(sender)
+        }
     }
 
-    func setRemoteTrackHandler(_ handler: (@Sendable (RTCMediaStreamTrack) -> Void)?) {
-        queue.sync { remoteTrackHandler = handler }
+    func removeTrack(_ sender: any CommunicationRtpSender) throws {
+        guard let raw = (sender as? WebRTCRtpSender)?.raw else {
+            throw CommunicationError(code: .invalidState, message: "sender is not from this backend")
+        }
+        let removed = queue.sync { peerConnection.removeTrack(raw) }
+        guard removed else { throw CommunicationError(code: .invalidState, message: "could not remove track") }
     }
 
-    private func adoptRemoteTrack(_ track: RTCMediaStreamTrack) {
-        let handler = queue.sync { remoteTrackHandler }
-        handler?(track)
+    func addTransceiver(kind: CommunicationMediaKind, direction: CommunicationTransceiverDirection) throws -> any CommunicationRtpTransceiver {
+        let initial = RTCRtpTransceiverInit()
+        initial.direction = direction.rtcDirection
+        return try queue.sync {
+            guard let transceiver = peerConnection.addTransceiver(of: kind.rtcMediaType, init: initial) else {
+                throw CommunicationError(code: .invalidState, message: "could not add transceiver")
+            }
+            return WebRTCRtpTransceiver(transceiver)
+        }
     }
+
+    var transceivers: [any CommunicationRtpTransceiver] { queue.sync { peerConnection.transceivers.map(WebRTCRtpTransceiver.init) } }
+    var senders: [any CommunicationRtpSender] { queue.sync { peerConnection.senders.map(WebRTCRtpSender.init) } }
+    var receivers: [any CommunicationRtpReceiver] { queue.sync { peerConnection.receivers.map(WebRTCRtpReceiver.init) } }
 
     /// Closes WebRTC resources and finishes event delivery.
     deinit {
@@ -272,24 +276,3 @@ final class PeerConnectionCore: @unchecked Sendable {
 }
 
 /// Lets the delegate, created before the core, reach the core afterwards.
-private final class RemoteTrackBox: @unchecked Sendable {
-    var handler: ((RTCMediaStreamTrack) -> Void)?
-}
-
-/// Instance-scoped owner for WebRTC SSL initialization and cleanup.
-private final class WebRTCSSLRuntime {
-    /// Initializes the WebRTC SSL adapter for this runtime instance.
-    init() throws {
-        guard RTCInitializeSSL() else {
-            throw CommunicationError(
-                code: .initializationFailed,
-                message: "Unable to initialize WebRTC SSL."
-            )
-        }
-    }
-
-    /// Cleans up the WebRTC SSL adapter when this runtime instance is released.
-    deinit {
-        _ = RTCCleanupSSL()
-    }
-}

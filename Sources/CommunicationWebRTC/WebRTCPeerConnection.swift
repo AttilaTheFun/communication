@@ -39,10 +39,8 @@ import Communication
 ///
 /// The event stream publishes `CommunicationEvent` values for negotiation,
 /// connection-state changes, ICE gathering and connectivity state, data-channel
-/// openings, and remote media attachment. Audio controls on this type affect
-/// only this peer connection: local microphone mute/gain controls the outgoing
-/// audio track, while remote playback mute/volume controls how this process
-/// hears the remote peer.
+/// openings, and track arrival. Tracks come from `WebRTCMediaDevices` (or a
+/// receiver) and go on through `addTrack`/`addTransceiver`, as in the spec.
 public actor WebRTCPeerConnection: CommunicationPeerConnection {
     /// Internal owner of the raw WebRTC peer connection.
     private let core: PeerConnectionCore
@@ -54,11 +52,6 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
     ///
     /// - Parameters:
     ///   - configuration: The ICE and peer connection configuration.
-    ///   - createsLocalAudioTrack: Whether to attach a microphone track at
-    ///     setup. Defaults to `false`: a connection that starts as data-only
-    ///     (a chat that may later place a call) should add audio when the
-    ///     call begins via `addLocalAudio()`, not carry a live mic from the
-    ///     start.
     public init(configuration: CommunicationConfiguration = CommunicationConfiguration()) throws {
         let core = try PeerConnectionCore(configuration: configuration)
         self.core = core
@@ -160,24 +153,21 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
         core.close()
     }
 
-    // MARK: - Media escape hatch
-    //
-    // Media (microphone, camera, playback) is the CommunicationCalling
-    // package's business. It reaches the raw WebRTC objects through here.
-    // The values are the WebRTC framework's `RTCPeerConnection` and
-    // `RTCPeerConnectionFactory`, typed as AnyObject so this module's API
-    // stays free of that framework; the caller imports WebRTC and casts.
+    // MARK: - Media
 
-    /// Runs `body` on the connection's serial queue with the raw peer
-    /// connection and factory.
-    public nonisolated func withUnderlying<T>(_ body: (AnyObject, AnyObject) throws -> T) rethrows -> T {
-        try core.withUnderlying { connection, factory in try body(connection, factory) }
+    public func addTrack(_ track: any CommunicationMediaStreamTrack, streamIDs: [String]) throws -> any CommunicationRtpSender {
+        try core.addTrack(track, streamIDs: streamIDs)
     }
 
-    /// Called with each remote media track (an `RTCMediaStreamTrack`) as
-    /// the peer adds it.
-    public nonisolated func setRemoteTrackHandler(_ handler: (@Sendable (AnyObject) -> Void)?) {
-        guard let handler else { core.setRemoteTrackHandler(nil); return }
-        core.setRemoteTrackHandler({ track in handler(track) })
+    public func removeTrack(_ sender: any CommunicationRtpSender) throws {
+        try core.removeTrack(sender)
     }
+
+    public func addTransceiver(kind: CommunicationMediaKind, direction: CommunicationTransceiverDirection) throws -> any CommunicationRtpTransceiver {
+        try core.addTransceiver(kind: kind, direction: direction)
+    }
+
+    public var transceivers: [any CommunicationRtpTransceiver] { core.transceivers }
+    public var senders: [any CommunicationRtpSender] { core.senders }
+    public var receivers: [any CommunicationRtpReceiver] { core.receivers }
 }

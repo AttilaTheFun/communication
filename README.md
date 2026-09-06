@@ -46,11 +46,14 @@ as further targets here or by adapting a platform stack behind the protocol.
 
 ## Media
 
-This package is transport only: data channels, negotiation, ICE. Calls
-(microphone, camera, video views) are the separate `CommunicationCalling`
-package, built on `WebRTCPeerConnection.withUnderlying` and
-`setRemoteTrackHandler`, the backend's escape hatch to the raw WebRTC
-objects.
+The media half of the WebRTC API is here too, shaped as the spec shapes it:
+`CommunicationMediaStreamTrack`, `CommunicationRtpSender`/`Receiver`/
+`Transceiver`, `addTrack`/`removeTrack`/`addTransceiver` on the peer
+connection, `trackAdded`/`trackRemoved` events, and `CommunicationMediaDevices`
+for `getUserMedia` (microphone, camera). The Apple backend renders video
+through `WebRTCVideoView.make()` attached to a `WebRTCMediaTrack`. What a
+*call* is (which frames start it, how media is negotiated onto an existing
+connection) is not WebRTC's business and lives in the Convo Protocol.
 
 ## Layout
 
