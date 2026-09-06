@@ -141,7 +141,7 @@ final class PeerConnectionCore: @unchecked Sendable {
                 with: audioSource,
                 trackId: "communication-audio-\(UUID().uuidString)"
             )
-            guard let sender = peerConnection.add(audioTrack, streamIds: ["communication"]) else {
+            guard let sender = attach(audioTrack, kind: .audio) else {
                 return false
             }
             localAudioSource = audioSource
@@ -184,7 +184,7 @@ final class PeerConnectionCore: @unchecked Sendable {
                   let format = Self.preferredFormat(for: device) else { return false }
             let source = factory.videoSource()
             let track = factory.videoTrack(with: source, trackId: "communication-video-\(UUID().uuidString)")
-            guard let sender = peerConnection.add(track, streamIds: ["communication"]) else { return false }
+            guard let sender = attach(track, kind: .video) else { return false }
             let capturer = RTCCameraVideoCapturer(delegate: source)
             capturer.startCapture(with: device, format: format, fps: Self.preferredFrameRate(for: format))
             localVideoSource = source
@@ -260,6 +260,26 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// After a remote description: the receivers may now carry tracks.
     func remoteDescriptionChanged() {
         queue.sync { attachRemoteRenderersLocked() }
+    }
+
+    /// Puts a local track on the connection. When the peer's offer already
+    /// created a transceiver of this kind that sends nothing of ours (the
+    /// answering side of a call), the track goes on that transceiver and
+    /// it turns to sendrecv, so the answer carries our media on the
+    /// offer's m-line. Otherwise a new transceiver: the next offer will
+    /// carry it. (Left to `add(_:streamIds:)`, the answering side's track
+    /// could land on a fresh transceiver the answer cannot mention, and
+    /// the caller never saw it.)
+    private func attach(_ track: RTCMediaStreamTrack, kind: RTCRtpMediaType) -> RTCRtpSender? {
+        if let spare = peerConnection.transceivers.first(where: {
+            $0.mediaType == kind && $0.sender.track == nil && !$0.isStopped
+                && ($0.direction == .recvOnly || $0.direction == .inactive)
+        }) {
+            spare.sender.track = track
+            spare.setDirection(.sendRecv, error: nil)
+            return spare.sender
+        }
+        return peerConnection.add(track, streamIds: ["communication"])
     }
 
     /// The front camera where there is one (a phone), else the first.
