@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 import Communication
@@ -33,6 +34,17 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// removed again when the call ends.
     private var localAudioSender: RTCRtpSender?
 
+    // Video: the camera feeds a source, the source a track, the track a
+    // sender; renderers attach to the local track and to every remote
+    // video track, whenever either turns up.
+    private var localVideoSource: RTCVideoSource?
+    private var localVideoTrack: RTCVideoTrack?
+    private var localVideoSender: RTCRtpSender?
+    private var cameraCapturer: RTCCameraVideoCapturer?
+    private var localVideoRenderers: [RTCVideoRenderer] = []
+    private var remoteVideoRenderers: [RTCVideoRenderer] = []
+    private var remoteVideoTracks: [RTCVideoTrack] = []
+
     /// Pipe used to publish delegate events as an async stream.
     private let pipe = AsyncPipe<CommunicationEvent>()
 
@@ -59,11 +71,15 @@ final class PeerConnectionCore: @unchecked Sendable {
         let dataChannels = DataChannelRegistry { [pipe] event in
             pipe.yield(event)
         }
+        // The delegate exists before the core does; the box lets it reach
+        // the core once there is one.
+        let remoteTrackBox = RemoteTrackBox()
         let delegate = PeerConnectionDelegate(
             emit: { [pipe] event in pipe.yield(event) },
             // A channel the remote opened arrives here; adopting it makes the
             // two sides symmetric from the caller's point of view.
-            adoptDataChannel: { [dataChannels] channel in dataChannels.adopt(channel) }
+            adoptDataChannel: { [dataChannels] channel in dataChannels.adopt(channel) },
+            adoptRemoteTrack: { track in remoteTrackBox.handler?(track) }
         )
         self.dataChannels = dataChannels
 
@@ -84,6 +100,7 @@ final class PeerConnectionCore: @unchecked Sendable {
         self.factory = factory
         self.delegate = delegate
         self.peerConnection = peerConnection
+        remoteTrackBox.handler = { [weak self] track in self?.adoptRemoteTrack(track) }
 
         if createsLocalAudioTrack {
             guard addLocalAudioTrack() else {
@@ -142,6 +159,99 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// Whether a call is currently active on this connection.
     var hasLocalAudio: Bool {
         queue.sync { localAudioTrack != nil }
+    }
+
+    // MARK: - Mid-call video
+    //
+    // The same shape as audio: a track added to and removed from the live
+    // connection, with a renegotiation after each change. The camera runs
+    // only while the track exists.
+
+    /// Adds a local camera track if there isn't one already and starts the
+    /// camera. Returns whether a track is now present.
+    @discardableResult
+    func addLocalVideoTrack() -> Bool {
+        queue.sync {
+            if localVideoTrack != nil { return true }
+            guard let device = Self.preferredCamera(),
+                  let format = Self.preferredFormat(for: device) else { return false }
+            let source = factory.videoSource()
+            let track = factory.videoTrack(with: source, trackId: "communication-video-\(UUID().uuidString)")
+            guard let sender = peerConnection.add(track, streamIds: ["communication"]) else { return false }
+            let capturer = RTCCameraVideoCapturer(delegate: source)
+            capturer.startCapture(with: device, format: format, fps: Self.preferredFrameRate(for: format))
+            localVideoSource = source
+            localVideoTrack = track
+            localVideoSender = sender
+            cameraCapturer = capturer
+            for renderer in localVideoRenderers { track.add(renderer) }
+            return true
+        }
+    }
+
+    /// Stops the camera and removes the local video track if present.
+    func removeLocalVideoTrack() {
+        queue.sync {
+            cameraCapturer?.stopCapture()
+            if let track = localVideoTrack {
+                for renderer in localVideoRenderers { track.remove(renderer) }
+            }
+            if let sender = localVideoSender {
+                peerConnection.removeTrack(sender)
+            }
+            cameraCapturer = nil
+            localVideoSender = nil
+            localVideoTrack = nil
+            localVideoSource = nil
+        }
+    }
+
+    var hasLocalVideo: Bool {
+        queue.sync { localVideoTrack != nil }
+    }
+
+    /// Shows the local camera in a renderer, now and for any later track.
+    func addLocalVideoRenderer(_ renderer: RTCVideoRenderer) {
+        queue.sync {
+            localVideoRenderers.append(renderer)
+            localVideoTrack?.add(renderer)
+        }
+    }
+
+    /// Shows the peer's camera in a renderer, now and for any later track.
+    func addRemoteVideoRenderer(_ renderer: RTCVideoRenderer) {
+        queue.sync {
+            remoteVideoRenderers.append(renderer)
+            for track in remoteVideoTracks { track.add(renderer) }
+        }
+    }
+
+    private func adoptRemoteTrack(_ track: RTCMediaStreamTrack) {
+        guard let video = track as? RTCVideoTrack else { return }
+        queue.sync {
+            remoteVideoTracks.append(video)
+            for renderer in remoteVideoRenderers { video.add(renderer) }
+        }
+    }
+
+    /// The front camera where there is one (a phone), else the first.
+    private static func preferredCamera() -> AVCaptureDevice? {
+        let devices = RTCCameraVideoCapturer.captureDevices()
+        return devices.first { $0.position == .front } ?? devices.first
+    }
+
+    /// The format nearest 640 pixels wide: enough for a face, kind to the
+    /// link.
+    private static func preferredFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
+        RTCCameraVideoCapturer.supportedFormats(for: device).min { a, b in
+            abs(Int(CMVideoFormatDescriptionGetDimensions(a.formatDescription).width) - 640)
+                < abs(Int(CMVideoFormatDescriptionGetDimensions(b.formatDescription).width) - 640)
+        }
+    }
+
+    private static func preferredFrameRate(for format: AVCaptureDevice.Format) -> Int {
+        let top = format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 30
+        return Int(min(30, top))
     }
 
     /// Closes WebRTC resources and finishes event delivery.
@@ -274,6 +384,7 @@ final class PeerConnectionCore: @unchecked Sendable {
     }
 
     func close() {
+        removeLocalVideoTrack()
         dataChannels.closeAll()
         queue.async { [peerConnection, pipe] in
             peerConnection.close()
@@ -362,6 +473,11 @@ final class PeerConnectionCore: @unchecked Sendable {
     private static func clampUnit(_ value: Float) -> Float {
         min(max(value, 0), 1)
     }
+}
+
+/// Lets the delegate, created before the core, reach the core afterwards.
+private final class RemoteTrackBox: @unchecked Sendable {
+    var handler: ((RTCMediaStreamTrack) -> Void)?
 }
 
 /// Instance-scoped owner for WebRTC SSL initialization and cleanup.

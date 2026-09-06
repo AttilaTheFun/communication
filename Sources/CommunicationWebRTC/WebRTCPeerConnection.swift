@@ -2,6 +2,17 @@ import Foundation
 
 import Communication
 
+#if canImport(UIKit)
+import UIKit
+/// The platform view a call's video renders into.
+public typealias CommunicationVideoView = UIView
+#elseif canImport(AppKit)
+import AppKit
+public typealias CommunicationVideoView = NSView
+#endif
+
+@preconcurrency internal import WebRTC
+
 /// The Apple implementation of `CommunicationPeerConnection`, backed by
 /// Google's WebRTC (the stasel/WebRTC binary distribution).
 ///
@@ -217,4 +228,58 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
     public func setRemoteAudioPlaybackVolume(_ volume: Float) {
         core.setRemoteAudioPlaybackVolume(volume)
     }
+
+    // MARK: - Mid-call video
+
+    /// Adds the camera to the live connection. Renegotiate afterwards, as
+    /// with `addLocalAudio()`.
+    @discardableResult
+    public func addLocalVideo() -> Bool {
+        core.addLocalVideoTrack()
+    }
+
+    /// Removes the camera track and stops capturing. Renegotiate afterwards.
+    public func removeLocalVideo() {
+        core.removeLocalVideoTrack()
+    }
+
+    public var hasLocalVideo: Bool {
+        core.hasLocalVideo
+    }
+
+    // MARK: - Video views
+    //
+    // Metal-backed views the app places wherever it shows a call. Each view
+    // renders whatever track is (or later becomes) attached, so they can be
+    // made before the call's media arrives.
+
+    /// A view showing this device's own camera.
+    @MainActor
+    public func makeLocalVideoView() -> CommunicationVideoView {
+        let view = Self.makeMetalVideoView()
+        core.addLocalVideoRenderer(view)
+        return view
+    }
+
+    /// A view showing the peer's camera.
+    @MainActor
+    public func makeRemoteVideoView() -> CommunicationVideoView {
+        let view = Self.makeMetalVideoView()
+        core.addRemoteVideoRenderer(view)
+        return view
+    }
+
+    #if canImport(UIKit)
+    @MainActor
+    private static func makeMetalVideoView() -> RTCMTLVideoView {
+        let view = RTCMTLVideoView(frame: .zero)
+        view.videoContentMode = .scaleAspectFill
+        return view
+    }
+    #else
+    @MainActor
+    private static func makeMetalVideoView() -> RTCMTLNSVideoView {
+        RTCMTLNSVideoView(frame: .zero)
+    }
+    #endif
 }

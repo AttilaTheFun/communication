@@ -95,6 +95,28 @@ public protocol CommunicationPeerConnection: Sendable {
 
     /// Sets local playback volume for remote audio (`0...1`, clamped).
     func setRemoteAudioPlaybackVolume(_ volume: Float) async
+
+    /// Adds a local camera track to the live connection, turning a call into
+    /// a video call. As with audio, the set of media lines changes, so the
+    /// caller must renegotiate afterwards. Returns whether a local video
+    /// track is now attached. Backends without a camera return false.
+    @discardableResult
+    func addLocalVideo() async -> Bool
+
+    /// Removes the local camera track and stops capturing. Renegotiate
+    /// afterwards.
+    func removeLocalVideo() async
+
+    /// Whether a local camera track is currently attached.
+    var hasLocalVideo: Bool { get async }
+}
+
+// Video is optional for a backend: one without a camera simply declines.
+extension CommunicationPeerConnection {
+    @discardableResult
+    public func addLocalVideo() async -> Bool { false }
+    public func removeLocalVideo() async {}
+    public var hasLocalVideo: Bool { get async { false } }
 }
 
 // Protocols cannot carry default arguments; the conveniences live here so
