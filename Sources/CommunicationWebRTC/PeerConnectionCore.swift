@@ -43,6 +43,11 @@ final class PeerConnectionCore: @unchecked Sendable {
     private var cameraCapturer: RTCCameraVideoCapturer?
     private var localVideoRenderers: [RTCVideoRenderer] = []
     private var remoteVideoRenderers: [RTCVideoRenderer] = []
+    /// The remote video tracks, held: a receiver hands out a fresh wrapper
+    /// each time it is asked, and a wrapper that is released takes its
+    /// renderers with it. One wrapper per track id, kept for the
+    /// connection's life, is what the renderers attach to.
+    private var remoteVideoTracks: [String: RTCVideoTrack] = [:]
     /// Which renderer is on which remote track, so re-scans never attach
     /// one twice.
     private var remoteAttachments: Set<String> = []
@@ -240,8 +245,9 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// all the same. Called whenever a renderer or a remote description
     /// arrives; attaching is idempotent.
     private func attachRemoteRenderersLocked() {
-        let tracks = peerConnection.receivers.compactMap { $0.track as? RTCVideoTrack }
-        for track in tracks {
+        for fresh in peerConnection.receivers.compactMap({ $0.track as? RTCVideoTrack }) {
+            if remoteVideoTracks[fresh.trackId] == nil { remoteVideoTracks[fresh.trackId] = fresh }
+            let track = remoteVideoTracks[fresh.trackId]!
             for renderer in remoteVideoRenderers {
                 let key = "\(track.trackId)-\(ObjectIdentifier(renderer as AnyObject).hashValue)"
                 guard !remoteAttachments.contains(key) else { continue }
