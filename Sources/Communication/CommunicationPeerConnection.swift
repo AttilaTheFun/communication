@@ -72,6 +72,20 @@ public protocol CommunicationPeerConnection: Sendable {
 
     /// Closes the peer connection and finishes its event stream.
     func close() async
+
+    // MARK: Media (RTCPeerConnection's track and transceiver methods)
+
+    func addTrack(_ track: any CommunicationMediaStreamTrack, streamIDs: [String]) async throws -> any CommunicationRtpSender
+
+    func removeTrack(_ sender: any CommunicationRtpSender) async throws
+
+    func addTransceiver(kind: CommunicationMediaKind, direction: CommunicationTransceiverDirection) async throws -> any CommunicationRtpTransceiver
+
+    var transceivers: [any CommunicationRtpTransceiver] { get async }
+
+    var senders: [any CommunicationRtpSender] { get async }
+
+    var receivers: [any CommunicationRtpReceiver] { get async }
 }
 
 // Protocols cannot carry default arguments; the conveniences live here so
@@ -109,10 +123,12 @@ extension CommunicationPeerConnection {
 /// (the Apple package provides `WebRTCConnector`) and never name a concrete
 /// peer connection type.
 public protocol CommunicationConnector: Sendable {
-    /// Creates a peer connection: data channels and negotiation. Media
-    /// (microphone, camera, playback) is a separate package layered on the
-    /// backend's underlying connection.
+    /// Creates a peer connection: data channels, media, and negotiation.
     func makePeerConnection(configuration: CommunicationConfiguration) throws -> any CommunicationPeerConnection
+
+    /// The device side (`getUserMedia`): tracks usable on this connector's
+    /// peer connections.
+    func makeMediaDevices() throws -> any CommunicationMediaDevices
 }
 
 extension CommunicationConnector {
