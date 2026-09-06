@@ -2,15 +2,6 @@ import Foundation
 
 import Communication
 
-#if canImport(UIKit)
-import UIKit
-/// The platform view a call's video renders into.
-public typealias CommunicationVideoView = UIView
-#elseif canImport(AppKit)
-import AppKit
-public typealias CommunicationVideoView = NSView
-#endif
-
 @preconcurrency internal import WebRTC
 
 /// The Apple implementation of `CommunicationPeerConnection`, backed by
@@ -68,14 +59,8 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
     ///     (a chat that may later place a call) should add audio when the
     ///     call begins via `addLocalAudio()`, not carry a live mic from the
     ///     start.
-    public init(
-        configuration: CommunicationConfiguration = CommunicationConfiguration(),
-        createsLocalAudioTrack: Bool = false
-    ) throws {
-        let core = try PeerConnectionCore(
-            configuration: configuration,
-            createsLocalAudioTrack: createsLocalAudioTrack
-        )
+    public init(configuration: CommunicationConfiguration = CommunicationConfiguration()) throws {
+        let core = try PeerConnectionCore(configuration: configuration)
         self.core = core
         self.events = core.events
     }
@@ -156,7 +141,6 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
         _ description: CommunicationSessionDescription
     ) async throws {
         try await core.setRemoteDescription(description)
-        core.remoteDescriptionChanged()
     }
 
     /// Adds an ICE candidate received from the remote peer.
@@ -176,111 +160,24 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
         core.close()
     }
 
-    // MARK: - Mid-call audio
-
-    /// Adds a local microphone track to the live connection, turning a
-    /// data-only session into a call. The set of media lines changes, so the
-    /// caller must renegotiate afterwards: create a new offer (or answer),
-    /// apply it locally, and exchange it with the peer.
-    ///
-    /// - Returns: Whether a local audio track is now attached.
-    @discardableResult
-    public func addLocalAudio() -> Bool {
-        core.addLocalAudioTrack()
-    }
-
-    /// Removes the local microphone track, ending the call while leaving the
-    /// connection and its data channels intact. Renegotiate afterwards, as
-    /// with `addLocalAudio()`.
-    public func removeLocalAudio() {
-        core.removeLocalAudioTrack()
-    }
-
-    /// Whether a local microphone track is currently attached — i.e. whether
-    /// a call is in progress on this connection.
-    public var hasLocalAudio: Bool {
-        core.hasLocalAudio
-    }
-
-    /// Mutes or unmutes the local outgoing audio track.
-    ///
-    /// - Parameter muted: Whether outgoing local audio should be muted.
-    public func setLocalAudioMuted(_ muted: Bool) {
-        core.setLocalAudioMuted(muted)
-    }
-
-    /// Sets the local outgoing audio gain.
-    ///
-    /// - Parameter gain: A value in `0...1`; values outside the range are clamped.
-    public func setLocalAudioGain(_ gain: Float) {
-        core.setLocalAudioGain(gain)
-    }
-
-    /// Mutes or unmutes local playback of remote audio.
-    ///
-    /// - Parameter muted: Whether remote audio playback should be muted locally.
-    public func setRemoteAudioPlaybackMuted(_ muted: Bool) {
-        core.setRemoteAudioPlaybackMuted(muted)
-    }
-
-    /// Sets local playback volume for remote audio.
-    ///
-    /// - Parameter volume: A value in `0...1`; values outside the range are clamped.
-    public func setRemoteAudioPlaybackVolume(_ volume: Float) {
-        core.setRemoteAudioPlaybackVolume(volume)
-    }
-
-    // MARK: - Mid-call video
-
-    /// Adds the camera to the live connection. Renegotiate afterwards, as
-    /// with `addLocalAudio()`.
-    @discardableResult
-    public func addLocalVideo() -> Bool {
-        core.addLocalVideoTrack()
-    }
-
-    /// Removes the camera track and stops capturing. Renegotiate afterwards.
-    public func removeLocalVideo() {
-        core.removeLocalVideoTrack()
-    }
-
-    public var hasLocalVideo: Bool {
-        core.hasLocalVideo
-    }
-
-    // MARK: - Video views
+    // MARK: - Media escape hatch
     //
-    // Metal-backed views the app places wherever it shows a call. Each view
-    // renders whatever track is (or later becomes) attached, so they can be
-    // made before the call's media arrives.
+    // Media (microphone, camera, playback) is the CommunicationCalling
+    // package's business. It reaches the raw WebRTC objects through here.
+    // The values are the WebRTC framework's `RTCPeerConnection` and
+    // `RTCPeerConnectionFactory`, typed as AnyObject so this module's API
+    // stays free of that framework; the caller imports WebRTC and casts.
 
-    /// A view showing this device's own camera.
-    @MainActor
-    public func makeLocalVideoView() -> CommunicationVideoView {
-        let view = Self.makeMetalVideoView()
-        core.addLocalVideoRenderer(view)
-        return view
-    }
-
-    /// A view showing the peer's camera.
-    @MainActor
-    public func makeRemoteVideoView() -> CommunicationVideoView {
-        let view = Self.makeMetalVideoView()
-        core.addRemoteVideoRenderer(view)
-        return view
+    /// Runs `body` on the connection's serial queue with the raw peer
+    /// connection and factory.
+    public nonisolated func withUnderlying<T>(_ body: (AnyObject, AnyObject) throws -> T) rethrows -> T {
+        try core.withUnderlying { connection, factory in try body(connection, factory) }
     }
 
-    #if canImport(UIKit)
-    @MainActor
-    private static func makeMetalVideoView() -> RTCMTLVideoView {
-        let view = RTCMTLVideoView(frame: .zero)
-        view.videoContentMode = .scaleAspectFill
-        return view
+    /// Called with each remote media track (an `RTCMediaStreamTrack`) as
+    /// the peer adds it.
+    public nonisolated func setRemoteTrackHandler(_ handler: (@Sendable (AnyObject) -> Void)?) {
+        guard let handler else { core.setRemoteTrackHandler(nil); return }
+        core.setRemoteTrackHandler({ track in handler(track) })
     }
-    #else
-    @MainActor
-    private static func makeMetalVideoView() -> RTCMTLNSVideoView {
-        RTCMTLNSVideoView(frame: .zero)
-    }
-    #endif
 }

@@ -34,7 +34,7 @@ public protocol CommunicationPeerConnection: Sendable {
 
     /// Whether a local microphone track is currently attached — i.e. whether
     /// a call is in progress on this connection.
-    var hasLocalAudio: Bool { get async }
+
 
     /// Opens a data channel.
     ///
@@ -72,51 +72,6 @@ public protocol CommunicationPeerConnection: Sendable {
 
     /// Closes the peer connection and finishes its event stream.
     func close() async
-
-    /// Adds a local microphone track to the live connection, turning a
-    /// data-only session into a call. The set of media lines changes, so the
-    /// caller must renegotiate afterwards. Returns whether a local audio
-    /// track is now attached.
-    @discardableResult
-    func addLocalAudio() async -> Bool
-
-    /// Removes the local microphone track, ending the call while leaving the
-    /// connection and its data channels intact. Renegotiate afterwards.
-    func removeLocalAudio() async
-
-    /// Mutes or unmutes the local outgoing audio track.
-    func setLocalAudioMuted(_ muted: Bool) async
-
-    /// Sets the local outgoing audio gain (`0...1`, clamped).
-    func setLocalAudioGain(_ gain: Float) async
-
-    /// Mutes or unmutes local playback of remote audio.
-    func setRemoteAudioPlaybackMuted(_ muted: Bool) async
-
-    /// Sets local playback volume for remote audio (`0...1`, clamped).
-    func setRemoteAudioPlaybackVolume(_ volume: Float) async
-
-    /// Adds a local camera track to the live connection, turning a call into
-    /// a video call. As with audio, the set of media lines changes, so the
-    /// caller must renegotiate afterwards. Returns whether a local video
-    /// track is now attached. Backends without a camera return false.
-    @discardableResult
-    func addLocalVideo() async -> Bool
-
-    /// Removes the local camera track and stops capturing. Renegotiate
-    /// afterwards.
-    func removeLocalVideo() async
-
-    /// Whether a local camera track is currently attached.
-    var hasLocalVideo: Bool { get async }
-}
-
-// Video is optional for a backend: one without a camera simply declines.
-extension CommunicationPeerConnection {
-    @discardableResult
-    public func addLocalVideo() async -> Bool { false }
-    public func removeLocalVideo() async {}
-    public var hasLocalVideo: Bool { get async { false } }
 }
 
 // Protocols cannot carry default arguments; the conveniences live here so
@@ -154,24 +109,8 @@ extension CommunicationPeerConnection {
 /// (the Apple package provides `WebRTCConnector`) and never name a concrete
 /// peer connection type.
 public protocol CommunicationConnector: Sendable {
-    /// Creates a peer connection.
-    ///
-    /// - Parameters:
-    ///   - configuration: The ICE and peer connection configuration.
-    ///   - createsLocalAudioTrack: Whether to attach a microphone track at
-    ///     setup. Defaults to false via the convenience below: a connection
-    ///     that starts as data-only should add audio when a call begins.
-    func makePeerConnection(
-        configuration: CommunicationConfiguration,
-        createsLocalAudioTrack: Bool
-    ) throws -> any CommunicationPeerConnection
-}
-
-extension CommunicationConnector {
-    /// Creates a data-only peer connection with the given configuration.
-    public func makePeerConnection(
-        configuration: CommunicationConfiguration = CommunicationConfiguration()
-    ) throws -> any CommunicationPeerConnection {
-        try makePeerConnection(configuration: configuration, createsLocalAudioTrack: false)
-    }
+    /// Creates a peer connection: data channels and negotiation. Media
+    /// (microphone, camera, playback) is a separate package layered on the
+    /// backend's underlying connection.
+    func makePeerConnection(configuration: CommunicationConfiguration) throws -> any CommunicationPeerConnection
 }

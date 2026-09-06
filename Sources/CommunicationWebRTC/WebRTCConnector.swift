@@ -5,13 +5,7 @@ import Communication
 public struct WebRTCConnector: CommunicationConnector {
     public init() {}
 
-    public func makePeerConnection(
-        configuration: CommunicationConfiguration,
-        createsLocalAudioTrack: Bool
-    ) throws -> any CommunicationPeerConnection {
-        try WebRTCPeerConnection(
-            configuration: configuration,
-            createsLocalAudioTrack: createsLocalAudioTrack
-        )
+    public func makePeerConnection(configuration: CommunicationConfiguration) throws -> any CommunicationPeerConnection {
+        try WebRTCPeerConnection(configuration: configuration)
     }
 }

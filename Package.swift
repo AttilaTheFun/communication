@@ -38,5 +38,11 @@ let package = Package(
             name: "CommunicationWebRTCTests",
             dependencies: ["CommunicationWebRTC"]
         ),
+        // Examples/: small programs showing the package; not products.
+        .executableTarget(
+            name: "DataChannelEcho",
+            dependencies: ["Communication", "CommunicationWebRTC"],
+            path: "Examples/DataChannelEcho"
+        ),
     ]
 )

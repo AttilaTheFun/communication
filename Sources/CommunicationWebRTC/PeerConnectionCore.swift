@@ -1,11 +1,13 @@
-import AVFoundation
 import Foundation
 
 import Communication
 
 @preconcurrency internal import WebRTC
 
-/// Internal owner of the raw WebRTC peer connection and related audio state.
+/// Internal owner of the raw WebRTC peer connection: negotiation, ICE,
+/// data channels. Media lives in a separate package that reaches the raw
+/// connection through `withUnderlying` and hears remote tracks through
+/// `remoteTrackHandler`.
 final class PeerConnectionCore: @unchecked Sendable {
     /// Serializes calls into the WebRTC peer connection.
     private let queue = DispatchQueue(label: "Communication.PeerConnection")
@@ -22,35 +24,8 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// Delegate retained for the lifetime of the peer connection.
     private let delegate: PeerConnectionDelegate
 
-    /// The local audio source, if this connection owns one. Mutable because
-    /// a call can begin and end mid-connection: the audio track is added and
-    /// removed on the live peer connection rather than fixed at setup.
-    private var localAudioSource: RTCAudioSource?
-
-    /// The local outgoing audio track, if this connection owns one.
-    private var localAudioTrack: RTCAudioTrack?
-
-    /// The RTP sender for the local audio track, kept so the track can be
-    /// removed again when the call ends.
-    private var localAudioSender: RTCRtpSender?
-
-    // Video: the camera feeds a source, the source a track, the track a
-    // sender; renderers attach to the local track and to every remote
-    // video track, whenever either turns up.
-    private var localVideoSource: RTCVideoSource?
-    private var localVideoTrack: RTCVideoTrack?
-    private var localVideoSender: RTCRtpSender?
-    private var cameraCapturer: RTCCameraVideoCapturer?
-    private var localVideoRenderers: [RTCVideoRenderer] = []
-    private var remoteVideoRenderers: [RTCVideoRenderer] = []
-    /// The remote video tracks, held: a receiver hands out a fresh wrapper
-    /// each time it is asked, and a wrapper that is released takes its
-    /// renderers with it. One wrapper per track id, kept for the
-    /// connection's life, is what the renderers attach to.
-    private var remoteVideoTracks: [String: RTCVideoTrack] = [:]
-    /// Which renderer is on which remote track, so re-scans never attach
-    /// one twice.
-    private var remoteAttachments: Set<String> = []
+    /// Called with each remote track the peer adds, for the media package.
+    private var remoteTrackHandler: (@Sendable (RTCMediaStreamTrack) -> Void)?
 
     /// Pipe used to publish delegate events as an async stream.
     private let pipe = AsyncPipe<CommunicationEvent>()
@@ -67,11 +42,7 @@ final class PeerConnectionCore: @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - configuration: Swift configuration converted to `RTCConfiguration`.
-    ///   - createsLocalAudioTrack: Whether to create and attach a local audio track.
-    init(
-        configuration: CommunicationConfiguration,
-        createsLocalAudioTrack: Bool = true
-    ) throws {
+    init(configuration: CommunicationConfiguration) throws {
         let sslRuntime = try WebRTCSSLRuntime()
 
         let factory = RTCPeerConnectionFactory()
@@ -108,198 +79,24 @@ final class PeerConnectionCore: @unchecked Sendable {
         self.delegate = delegate
         self.peerConnection = peerConnection
         remoteTrackBox.handler = { [weak self] track in self?.adoptRemoteTrack(track) }
-
-        if createsLocalAudioTrack {
-            guard addLocalAudioTrack() else {
-                peerConnection.close()
-                throw CommunicationError(
-                    code: .initializationFailed,
-                    message: "Unable to add a local audio track to the WebRTC peer connection."
-                )
-            }
-        }
     }
 
-    // MARK: - Mid-call audio
-    //
-    // Audio is added and removed on the live connection, so a data-only
-    // session can become a call and end again without tearing down the peer
-    // connection or the chat that rides it. Each change alters the set of
-    // m-lines, so the caller must renegotiate afterwards (offer/answer).
+    // MARK: - Media escape hatch
 
-    /// Adds a local microphone track if there isn't one already. Returns
-    /// whether a track is now present. Call `offer`/`answer` afterwards — the
-    /// SDP changed.
-    @discardableResult
-    func addLocalAudioTrack() -> Bool {
-        queue.sync {
-            if localAudioTrack != nil { return true }
-            let audioSource = factory.audioSource(
-                with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-            )
-            let audioTrack = factory.audioTrack(
-                with: audioSource,
-                trackId: "communication-audio-\(UUID().uuidString)"
-            )
-            guard let sender = attach(audioTrack, kind: .audio) else {
-                return false
-            }
-            localAudioSource = audioSource
-            localAudioTrack = audioTrack
-            localAudioSender = sender
-            return true
-        }
+    /// Runs `body` on the connection's serial queue with the raw peer
+    /// connection and factory. The media package adds and removes tracks
+    /// here; nothing in this package interprets them.
+    func withUnderlying<T>(_ body: (RTCPeerConnection, RTCPeerConnectionFactory) throws -> T) rethrows -> T {
+        try queue.sync { try body(peerConnection, factory) }
     }
 
-    /// Removes the local microphone track if present. Renegotiate afterwards.
-    func removeLocalAudioTrack() {
-        queue.sync {
-            if let sender = localAudioSender {
-                peerConnection.removeTrack(sender)
-            }
-            localAudioSender = nil
-            localAudioTrack = nil
-            localAudioSource = nil
-        }
-    }
-
-    /// Whether a call is currently active on this connection.
-    var hasLocalAudio: Bool {
-        queue.sync { localAudioTrack != nil }
-    }
-
-    // MARK: - Mid-call video
-    //
-    // The same shape as audio: a track added to and removed from the live
-    // connection, with a renegotiation after each change. The camera runs
-    // only while the track exists.
-
-    /// Adds a local camera track if there isn't one already and starts the
-    /// camera. Returns whether a track is now present.
-    @discardableResult
-    func addLocalVideoTrack() -> Bool {
-        queue.sync {
-            if localVideoTrack != nil { return true }
-            guard let device = Self.preferredCamera(),
-                  let format = Self.preferredFormat(for: device) else { return false }
-            let source = factory.videoSource()
-            let track = factory.videoTrack(with: source, trackId: "communication-video-\(UUID().uuidString)")
-            guard let sender = attach(track, kind: .video) else { return false }
-            let capturer = RTCCameraVideoCapturer(delegate: source)
-            capturer.startCapture(with: device, format: format, fps: Self.preferredFrameRate(for: format))
-            localVideoSource = source
-            localVideoTrack = track
-            localVideoSender = sender
-            cameraCapturer = capturer
-            for renderer in localVideoRenderers { track.add(renderer) }
-            return true
-        }
-    }
-
-    /// Stops the camera and removes the local video track if present.
-    func removeLocalVideoTrack() {
-        queue.sync {
-            cameraCapturer?.stopCapture()
-            if let track = localVideoTrack {
-                for renderer in localVideoRenderers { track.remove(renderer) }
-            }
-            if let sender = localVideoSender {
-                peerConnection.removeTrack(sender)
-            }
-            cameraCapturer = nil
-            localVideoSender = nil
-            localVideoTrack = nil
-            localVideoSource = nil
-        }
-    }
-
-    var hasLocalVideo: Bool {
-        queue.sync { localVideoTrack != nil }
-    }
-
-    /// Shows the local camera in a renderer, now and for any later track.
-    func addLocalVideoRenderer(_ renderer: RTCVideoRenderer) {
-        queue.sync {
-            localVideoRenderers.append(renderer)
-            localVideoTrack?.add(renderer)
-        }
-    }
-
-    /// Shows the peer's camera in a renderer, now and for any later track.
-    func addRemoteVideoRenderer(_ renderer: RTCVideoRenderer) {
-        queue.sync {
-            remoteVideoRenderers.append(renderer)
-            attachRemoteRenderersLocked()
-        }
+    func setRemoteTrackHandler(_ handler: (@Sendable (RTCMediaStreamTrack) -> Void)?) {
+        queue.sync { remoteTrackHandler = handler }
     }
 
     private func adoptRemoteTrack(_ track: RTCMediaStreamTrack) {
-        guard track is RTCVideoTrack else { return }
-        queue.sync { attachRemoteRenderersLocked() }
-    }
-
-    /// Every remote video track the connection is receiving, from its
-    /// receivers rather than from the delegate: the side that made the
-    /// offer already has its transceivers, so no "track added" arrives
-    /// there when the answer lands, but the receiver carries the track
-    /// all the same. Called whenever a renderer or a remote description
-    /// arrives; attaching is idempotent.
-    private func attachRemoteRenderersLocked() {
-        for fresh in peerConnection.receivers.compactMap({ $0.track as? RTCVideoTrack }) {
-            if remoteVideoTracks[fresh.trackId] == nil { remoteVideoTracks[fresh.trackId] = fresh }
-            let track = remoteVideoTracks[fresh.trackId]!
-            for renderer in remoteVideoRenderers {
-                let key = "\(track.trackId)-\(ObjectIdentifier(renderer as AnyObject).hashValue)"
-                guard !remoteAttachments.contains(key) else { continue }
-                remoteAttachments.insert(key)
-                track.add(renderer)
-            }
-        }
-    }
-
-    /// After a remote description: the receivers may now carry tracks.
-    func remoteDescriptionChanged() {
-        queue.sync { attachRemoteRenderersLocked() }
-    }
-
-    /// Puts a local track on the connection. When the peer's offer already
-    /// created a transceiver of this kind that sends nothing of ours (the
-    /// answering side of a call), the track goes on that transceiver and
-    /// it turns to sendrecv, so the answer carries our media on the
-    /// offer's m-line. Otherwise a new transceiver: the next offer will
-    /// carry it. (Left to `add(_:streamIds:)`, the answering side's track
-    /// could land on a fresh transceiver the answer cannot mention, and
-    /// the caller never saw it.)
-    private func attach(_ track: RTCMediaStreamTrack, kind: RTCRtpMediaType) -> RTCRtpSender? {
-        if let spare = peerConnection.transceivers.first(where: {
-            $0.mediaType == kind && $0.sender.track == nil && !$0.isStopped
-                && ($0.direction == .recvOnly || $0.direction == .inactive)
-        }) {
-            spare.sender.track = track
-            spare.setDirection(.sendRecv, error: nil)
-            return spare.sender
-        }
-        return peerConnection.add(track, streamIds: ["communication"])
-    }
-
-    /// The front camera where there is one (a phone), else the first.
-    private static func preferredCamera() -> AVCaptureDevice? {
-        let devices = RTCCameraVideoCapturer.captureDevices()
-        return devices.first { $0.position == .front } ?? devices.first
-    }
-
-    /// The format nearest 640 pixels wide: enough for a face, kind to the
-    /// link.
-    private static func preferredFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
-        RTCCameraVideoCapturer.supportedFormats(for: device).min { a, b in
-            abs(Int(CMVideoFormatDescriptionGetDimensions(a.formatDescription).width) - 640)
-                < abs(Int(CMVideoFormatDescriptionGetDimensions(b.formatDescription).width) - 640)
-        }
-    }
-
-    private static func preferredFrameRate(for format: AVCaptureDevice.Format) -> Int {
-        let top = format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 30
-        return Int(min(30, top))
+        let handler = queue.sync { remoteTrackHandler }
+        handler?(track)
     }
 
     /// Closes WebRTC resources and finishes event delivery.
@@ -432,47 +229,10 @@ final class PeerConnectionCore: @unchecked Sendable {
     }
 
     func close() {
-        removeLocalVideoTrack()
         dataChannels.closeAll()
         queue.async { [peerConnection, pipe] in
             peerConnection.close()
             pipe.finish()
-        }
-    }
-
-    /// Enables or disables the local outgoing audio track. Reads the track
-    /// on the queue rather than capturing it, so it affects whatever track is
-    /// attached now — a call may have started after this object was created.
-    func setLocalAudioMuted(_ muted: Bool) {
-        queue.async { [self] in
-            localAudioTrack?.isEnabled = !muted
-        }
-    }
-
-    /// Maps `0...1` gain into WebRTC's audio source volume range.
-    func setLocalAudioGain(_ gain: Float) {
-        let volume = Double(Self.clampUnit(gain)) * 10
-        queue.async { [self] in
-            localAudioSource?.volume = volume
-        }
-    }
-
-    /// Enables or disables all currently attached remote audio tracks.
-    func setRemoteAudioPlaybackMuted(_ muted: Bool) {
-        queue.async { [peerConnection] in
-            for audioTrack in Self.remoteAudioTracks(in: peerConnection) {
-                audioTrack.isEnabled = !muted
-            }
-        }
-    }
-
-    /// Maps `0...1` playback volume into WebRTC remote audio source volume.
-    func setRemoteAudioPlaybackVolume(_ volume: Float) {
-        let rtcVolume = Double(Self.clampUnit(volume)) * 10
-        queue.async { [peerConnection] in
-            for audioTrack in Self.remoteAudioTracks(in: peerConnection) {
-                audioTrack.source.volume = rtcVolume
-            }
         }
     }
 
@@ -508,18 +268,6 @@ final class PeerConnectionCore: @unchecked Sendable {
         }
 
         return .success(())
-    }
-
-    /// Returns the remote audio tracks currently attached to the peer connection.
-    private static func remoteAudioTracks(in peerConnection: RTCPeerConnection) -> [RTCAudioTrack] {
-        peerConnection.receivers.compactMap { receiver in
-            receiver.track as? RTCAudioTrack
-        }
-    }
-
-    /// Clamps a normalized audio value into `0...1`.
-    private static func clampUnit(_ value: Float) -> Float {
-        min(max(value, 0), 1)
     }
 }
 

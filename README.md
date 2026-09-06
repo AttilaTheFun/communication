@@ -43,3 +43,16 @@ Android, Linux and Windows implementations of the same API are planned, either
 as further targets here or by adapting a platform stack behind the protocol.
 
 [stasel]: https://github.com/stasel/WebRTC
+
+## Media
+
+This package is transport only: data channels, negotiation, ICE. Calls
+(microphone, camera, video views) are the separate `CommunicationCalling`
+package, built on `WebRTCPeerConnection.withUnderlying` and
+`setRemoteTrackHandler`, the backend's escape hatch to the raw WebRTC
+objects.
+
+## Layout
+
+`Sources/` (Communication, CommunicationWebRTC), `Tests/`, `Examples/`
+(`swift run DataChannelEcho`), `Docs/`, `Tools/`.
