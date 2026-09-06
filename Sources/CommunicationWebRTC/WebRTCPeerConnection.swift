@@ -156,6 +156,7 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
         _ description: CommunicationSessionDescription
     ) async throws {
         try await core.setRemoteDescription(description)
+        core.remoteDescriptionChanged()
     }
 
     /// Adds an ICE candidate received from the remote peer.

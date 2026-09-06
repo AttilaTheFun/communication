@@ -43,7 +43,9 @@ final class PeerConnectionCore: @unchecked Sendable {
     private var cameraCapturer: RTCCameraVideoCapturer?
     private var localVideoRenderers: [RTCVideoRenderer] = []
     private var remoteVideoRenderers: [RTCVideoRenderer] = []
-    private var remoteVideoTracks: [RTCVideoTrack] = []
+    /// Which renderer is on which remote track, so re-scans never attach
+    /// one twice.
+    private var remoteAttachments: Set<String> = []
 
     /// Pipe used to publish delegate events as an async stream.
     private let pipe = AsyncPipe<CommunicationEvent>()
@@ -222,16 +224,36 @@ final class PeerConnectionCore: @unchecked Sendable {
     func addRemoteVideoRenderer(_ renderer: RTCVideoRenderer) {
         queue.sync {
             remoteVideoRenderers.append(renderer)
-            for track in remoteVideoTracks { track.add(renderer) }
+            attachRemoteRenderersLocked()
         }
     }
 
     private func adoptRemoteTrack(_ track: RTCMediaStreamTrack) {
-        guard let video = track as? RTCVideoTrack else { return }
-        queue.sync {
-            remoteVideoTracks.append(video)
-            for renderer in remoteVideoRenderers { video.add(renderer) }
+        guard track is RTCVideoTrack else { return }
+        queue.sync { attachRemoteRenderersLocked() }
+    }
+
+    /// Every remote video track the connection is receiving, from its
+    /// receivers rather than from the delegate: the side that made the
+    /// offer already has its transceivers, so no "track added" arrives
+    /// there when the answer lands, but the receiver carries the track
+    /// all the same. Called whenever a renderer or a remote description
+    /// arrives; attaching is idempotent.
+    private func attachRemoteRenderersLocked() {
+        let tracks = peerConnection.receivers.compactMap { $0.track as? RTCVideoTrack }
+        for track in tracks {
+            for renderer in remoteVideoRenderers {
+                let key = "\(track.trackId)-\(ObjectIdentifier(renderer as AnyObject).hashValue)"
+                guard !remoteAttachments.contains(key) else { continue }
+                remoteAttachments.insert(key)
+                track.add(renderer)
+            }
         }
+    }
+
+    /// After a remote description: the receivers may now carry tracks.
+    func remoteDescriptionChanged() {
+        queue.sync { attachRemoteRenderersLocked() }
     }
 
     /// The front camera where there is one (a phone), else the first.
