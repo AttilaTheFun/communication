@@ -18,7 +18,7 @@ import PackageDescription
 
 let package = Package(
     name: "communication",
-    platforms: [.iOS(.v16), .macOS(.v13), .visionOS(.v1)],
+    platforms: [.iOS(.v16), .macOS(.v13), .visionOS("26.0")],
     products: [
         .library(name: "Communication", targets: ["Communication"]),
         .library(name: "CommunicationWebRTC", targets: ["CommunicationWebRTC"]),
