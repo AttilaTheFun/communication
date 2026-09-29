@@ -78,7 +78,9 @@ every connection.
 
 ```swift
 let spatial = WebRTCSpatialAudio()
-try spatial.start()
+try await spatial.start(captureMicrophone: false)   // listen only; no permission prompt
+// later, on the user's opt-in (asks for permission then):
+try await spatial.setMicrophoneEnabled(true)
 let peer = try WebRTCConnector().makePeerConnection(
     configuration: CommunicationConfiguration(iceServers: servers, audioPlayback: .application))
 let audio = peer.applicationAudio!

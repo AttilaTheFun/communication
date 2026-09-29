@@ -5,12 +5,16 @@ import os
 /// Plays connections made with `CommunicationAudioPlayback.application`
 /// through one `AVAudioEngine`, each peer a mono source in an
 /// `AVAudioEnvironmentNode` (HRTF) at a position the application sets,
-/// and feeds the microphone to all of them. Voice processing (echo
-/// cancellation) is on, so peers do not hear themselves.
+/// and, when enabled, feeds the microphone to all of them with voice
+/// processing (echo cancellation), so peers do not hear themselves.
+/// `start(captureMicrophone: false)` listens only; the microphone can be
+/// turned on later with `setMicrophoneEnabled(true)`, which is also the
+/// only point permission is asked for.
 ///
 /// ```swift
 /// let audio = WebRTCSpatialAudio()
-/// try audio.start()
+/// try await audio.start(captureMicrophone: false)        // listen only
+/// try await audio.setMicrophoneEnabled(true)             // on the user's opt-in
 /// let source = audio.add(peer.applicationAudio!)       // after makePeerConnection
 /// _ = try await peer.addTrack(try peer.applicationAudio!.makeMicrophoneTrack(), streamIDs: ["voice"])
 /// source.position = AVAudio3DPoint(x: 1, y: 0, z: -2)   // on each pose update
@@ -24,7 +28,6 @@ public final class WebRTCSpatialAudio {
     private var sources: [ObjectIdentifier: AVAudioSourceNode] = [:]
     /// The connections the microphone feeds; read on the capture thread.
     private let listeners = OSAllocatedUnfairLock(initialState: [any CommunicationApplicationAudio]())
-    private var converter: AVAudioConverter?
 
     public init(sampleRate: Double = 48_000) {
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
@@ -45,21 +48,65 @@ public final class WebRTCSpatialAudio {
         set { environment.listenerAngularOrientation = newValue }
     }
 
-    /// Starts the engine and the microphone. On iOS and visionOS it sets the
-    /// shared audio session to voice chat first.
-    public func start() throws {
+    /// Whether the microphone is captured and fed to the connections.
+    public private(set) var isMicrophoneEnabled = false
+
+    /// Starts playback. With `captureMicrophone` false it only listens: the
+    /// input is never touched, so nothing asks for microphone permission,
+    /// and `setMicrophoneEnabled(true)` can turn capture on later. With true
+    /// it asks for permission first and throws if it is refused.
+    public func start(captureMicrophone: Bool = true) async throws {
+        if captureMicrophone { try await Self.requestMicrophonePermission() }
+        try configureSession(recording: captureMicrophone)
+        if captureMicrophone { try installMicrophone() }
+        try engine.start()
+    }
+
+    /// Turns microphone capture on or off while playing. Turning it on asks
+    /// for permission (only then) and throws if refused; either way the
+    /// engine restarts briefly, and every peer's source, position and the
+    /// listener stay as they were.
+    public func setMicrophoneEnabled(_ enabled: Bool) async throws {
+        guard enabled != isMicrophoneEnabled else { return }
+        if enabled { try await Self.requestMicrophonePermission() }
+        let wasRunning = engine.isRunning
+        engine.stop()
+        if enabled {
+            try configureSession(recording: true)
+            try installMicrophone()
+        } else {
+            removeMicrophone()
+            try configureSession(recording: false)
+        }
+        if wasRunning { try engine.start() }
+    }
+
+    public func stop() {
+        removeMicrophone()
+        engine.stop()
+    }
+
+    private func configureSession(recording: Bool) throws {
         #if os(iOS) || os(visionOS)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        if recording {
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        } else {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        }
         try session.setActive(true)
         #endif
+    }
+
+    /// Voice processing (echo cancellation) on the input, and a tap that
+    /// converts to 48 kHz mono and feeds every added connection.
+    private func installMicrophone() throws {
         let input = engine.inputNode
         try input.setVoiceProcessingEnabled(true)
         let hardware = input.outputFormat(forBus: 0)
-        converter = AVAudioConverter(from: hardware, to: format)
-        let listeners = listeners
         let target = format
-        let converter = converter
+        let converter = AVAudioConverter(from: hardware, to: target)
+        let listeners = listeners
         input.installTap(onBus: 0, bufferSize: 480, format: hardware) { buffer, _ in
             guard let converter else { return }
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / hardware.sampleRate) + 32
@@ -74,12 +121,27 @@ public final class WebRTCSpatialAudio {
             guard let samples = out.floatChannelData?[0], out.frameLength > 0 else { return }
             for audio in listeners.withLock({ $0 }) { audio.deliverCaptured(samples, frameCount: Int(out.frameLength)) }
         }
-        try engine.start()
+        isMicrophoneEnabled = true
     }
 
-    public func stop() {
+    private func removeMicrophone() {
+        guard isMicrophoneEnabled else { return }
         engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        try? engine.inputNode.setVoiceProcessingEnabled(false)
+        isMicrophoneEnabled = false
+    }
+
+    private static func requestMicrophonePermission() async throws {
+        #if os(iOS) || os(visionOS)
+        let granted = await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
+            AVAudioSession.sharedInstance().requestRecordPermission { done.resume(returning: $0) }
+        }
+        #else
+        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        #endif
+        guard granted else {
+            throw CommunicationError(code: .initializationFailed, message: "microphone permission was refused")
+        }
     }
 
     /// Adds a connection: its received audio becomes a positional mono source
