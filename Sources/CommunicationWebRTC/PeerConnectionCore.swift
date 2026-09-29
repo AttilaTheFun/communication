@@ -2,7 +2,7 @@ import Foundation
 
 import Communication
 
-@preconcurrency internal import WebRTC
+@preconcurrency internal import LiveKitWebRTC
 
 /// Internal owner of the raw WebRTC peer connection: negotiation, ICE,
 /// data channels. Media lives in a separate package that reaches the raw
@@ -12,10 +12,10 @@ final class PeerConnectionCore: @unchecked Sendable {
 
     /// The process-wide factory (`WebRTCRuntime`), shared with media devices so
     /// their tracks can be added to any connection.
-    private let factory: RTCPeerConnectionFactory
+    private let factory: LKRTCPeerConnectionFactory
 
     /// The raw WebRTC peer connection.
-    private let peerConnection: RTCPeerConnection
+    private let peerConnection: LKRTCPeerConnection
 
     /// Delegate retained for the lifetime of the peer connection.
     private let delegate: PeerConnectionDelegate
@@ -34,9 +34,23 @@ final class PeerConnectionCore: @unchecked Sendable {
     /// Creates the underlying WebRTC peer connection.
     ///
     /// - Parameters:
-    ///   - configuration: Swift configuration converted to `RTCConfiguration`.
+    ///   - configuration: Swift configuration converted to `LKRTCConfiguration`.
+    /// The connection's own audio device when the application plays and
+    /// captures its audio (`CommunicationAudioPlayback.application`).
+    let applicationAudio: ApplicationAudioDevice?
+
     init(configuration: CommunicationConfiguration) throws {
-        let factory = try WebRTCRuntime.shared.factory
+        let factory: LKRTCPeerConnectionFactory
+        if configuration.audioPlayback == .application {
+            // A factory of its own, so the device's playout is this peer alone.
+            let device = ApplicationAudioDevice()
+            factory = try WebRTCRuntime.shared.makeFactory(audioDevice: device)
+            device.factory = factory
+            applicationAudio = device
+        } else {
+            factory = try WebRTCRuntime.shared.factory
+            applicationAudio = nil
+        }
         let dataChannels = DataChannelRegistry { [pipe] event in
             pipe.yield(event)
         }
@@ -50,7 +64,7 @@ final class PeerConnectionCore: @unchecked Sendable {
 
         let peerConnection = factory.peerConnection(
             with: configuration.rtcConfiguration,
-            constraints: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil),
+            constraints: LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil),
             delegate: delegate
         )
 
@@ -89,7 +103,7 @@ final class PeerConnectionCore: @unchecked Sendable {
     }
 
     func addTransceiver(kind: CommunicationMediaKind, direction: CommunicationTransceiverDirection) throws -> any CommunicationRtpTransceiver {
-        let initial = RTCRtpTransceiverInit()
+        let initial = LKRTCRtpTransceiverInit()
         initial.direction = direction.rtcDirection
         return try queue.sync {
             guard let transceiver = peerConnection.addTransceiver(of: kind.rtcMediaType, init: initial) else {
@@ -222,12 +236,12 @@ final class PeerConnectionCore: @unchecked Sendable {
                 message: "no open data channel\(label.map { " labelled \($0)" } ?? "")"
             )
         }
-        let buffer: RTCDataBuffer
+        let buffer: LKRTCDataBuffer
         switch message {
         case let .text(text):
-            buffer = RTCDataBuffer(data: Data(text.utf8), isBinary: false)
+            buffer = LKRTCDataBuffer(data: Data(text.utf8), isBinary: false)
         case let .binary(data):
-            buffer = RTCDataBuffer(data: data, isBinary: true)
+            buffer = LKRTCDataBuffer(data: data, isBinary: true)
         }
         _ = queue.sync { channel.sendData(buffer) }
     }
@@ -242,7 +256,7 @@ final class PeerConnectionCore: @unchecked Sendable {
 
     /// Converts WebRTC's optional description/error callback into a Swift result.
     private static func result(
-        description: RTCSessionDescription?,
+        description: LKRTCSessionDescription?,
         error: (any Error)?
     ) -> Result<CommunicationSessionDescription, any Error> {
         if let error {

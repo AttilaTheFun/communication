@@ -8,7 +8,8 @@
 //     `CommunicationPeerConnection` / `CommunicationConnector` protocols.
 //     It imports nothing but Foundation and compiles anywhere Swift does.
 //   - `CommunicationWebRTC` is the Apple implementation (iOS, macOS),
-//     backed by Google's WebRTC via the stasel/WebRTC binary distribution.
+//     backed by Google's WebRTC via LiveKit's binary distribution
+//     (livekit/webrtc-xcframework), which covers visionOS too.
 //
 // Further platform implementations (Android, Linux, Windows) conform to the
 // same API, either inside this package or by adapting a platform stack
@@ -17,13 +18,15 @@ import PackageDescription
 
 let package = Package(
     name: "communication",
-    platforms: [.iOS(.v16), .macOS(.v13)],
+    platforms: [.iOS(.v16), .macOS(.v13), .visionOS(.v1)],
     products: [
         .library(name: "Communication", targets: ["Communication"]),
         .library(name: "CommunicationWebRTC", targets: ["CommunicationWebRTC"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/stasel/WebRTC", from: "152.0.0"),
+        // LiveKit's packaging of Google's WebRTC (class prefix LK): the same
+        // Objective-C API as stasel's builds, with visionOS and tvOS slices.
+        .package(url: "https://github.com/livekit/webrtc-xcframework", exact: "150.7871.02"),
     ],
     targets: [
         .target(name: "Communication"),
@@ -31,7 +34,7 @@ let package = Package(
             name: "CommunicationWebRTC",
             dependencies: [
                 "Communication",
-                .product(name: "WebRTC", package: "WebRTC"),
+                .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
             ]
         ),
         .testTarget(

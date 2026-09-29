@@ -2,7 +2,7 @@ import Foundation
 
 import Communication
 
-@preconcurrency internal import WebRTC
+@preconcurrency internal import LiveKitWebRTC
 
 /// Owns the data channels on a peer connection and turns their callbacks into
 /// `CommunicationEvent` values.
@@ -12,9 +12,9 @@ import Communication
 /// channel through `didOpen` when the remote creates it. Either way the
 /// channel ends up here under its label, so `send(_:on:)` behaves identically
 /// on both — which is what lets a caller write one code path instead of two.
-final class DataChannelRegistry: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
+final class DataChannelRegistry: NSObject, LKRTCDataChannelDelegate, @unchecked Sendable {
     private let lock = NSLock()
-    private var channels: [String: RTCDataChannel] = [:]
+    private var channels: [String: LKRTCDataChannel] = [:]
     private let emit: @Sendable (CommunicationEvent) -> Void
 
     init(emit: @escaping @Sendable (CommunicationEvent) -> Void) {
@@ -22,7 +22,7 @@ final class DataChannelRegistry: NSObject, RTCDataChannelDelegate, @unchecked Se
     }
 
     /// Adopts a channel — created locally or handed over by the remote.
-    func adopt(_ channel: RTCDataChannel) {
+    func adopt(_ channel: LKRTCDataChannel) {
         lock.lock()
         channels[channel.label] = channel
         lock.unlock()
@@ -34,14 +34,14 @@ final class DataChannelRegistry: NSObject, RTCDataChannelDelegate, @unchecked Se
         }
     }
 
-    func channel(labeled label: String) -> RTCDataChannel? {
+    func channel(labeled label: String) -> LKRTCDataChannel? {
         lock.lock(); defer { lock.unlock() }
         return channels[label]
     }
 
     /// The single open channel, when there is exactly one — the common case
     /// for an application that opens a channel and never thinks about it again.
-    func soleOpenChannel() -> RTCDataChannel? {
+    func soleOpenChannel() -> LKRTCDataChannel? {
         lock.lock(); defer { lock.unlock() }
         let open = channels.values.filter { $0.readyState == .open }
         return open.count == 1 ? open.first : nil
@@ -55,9 +55,9 @@ final class DataChannelRegistry: NSObject, RTCDataChannelDelegate, @unchecked Se
         for channel in all { channel.close() }
     }
 
-    // MARK: - RTCDataChannelDelegate
+    // MARK: - LKRTCDataChannelDelegate
 
-    func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
+    func dataChannelDidChangeState(_ dataChannel: LKRTCDataChannel) {
         emit(.dataChannelStateChanged(
             label: dataChannel.label,
             state: CommunicationDataChannelState(dataChannel.readyState)
@@ -67,7 +67,7 @@ final class DataChannelRegistry: NSObject, RTCDataChannelDelegate, @unchecked Se
         }
     }
 
-    func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
+    func dataChannel(_ dataChannel: LKRTCDataChannel, didReceiveMessageWith buffer: LKRTCDataBuffer) {
         // `isBinary` is the sender's declaration, and it is preserved rather
         // than guessed at: text that happens to be valid UTF-8 bytes is not
         // the same thing as text.
@@ -80,7 +80,7 @@ final class DataChannelRegistry: NSObject, RTCDataChannelDelegate, @unchecked Se
 }
 
 extension CommunicationDataChannelState {
-    init(_ state: RTCDataChannelState) {
+    init(_ state: LKRTCDataChannelState) {
         switch state {
         case .connecting: self = .connecting
         case .open: self = .open
@@ -92,8 +92,8 @@ extension CommunicationDataChannelState {
 }
 
 extension CommunicationDataChannelConfiguration {
-    var rtcConfiguration: RTCDataChannelConfiguration {
-        let configuration = RTCDataChannelConfiguration()
+    var rtcConfiguration: LKRTCDataChannelConfiguration {
+        let configuration = LKRTCDataChannelConfiguration()
         configuration.isOrdered = ordered
         if let maxRetransmitTimeMilliseconds {
             configuration.maxRetransmitTimeMs = maxRetransmitTimeMilliseconds

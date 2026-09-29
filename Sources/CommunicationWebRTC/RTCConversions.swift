@@ -4,13 +4,13 @@
 // (the SDP kind mapping) stay next to their only users.
 
 import Communication
-@preconcurrency internal import WebRTC
+@preconcurrency internal import LiveKitWebRTC
 
 /// Conversion from public Swift configuration to raw WebRTC configuration.
 extension CommunicationConfiguration {
-    /// The raw WebRTC configuration consumed by `RTCPeerConnectionFactory`.
-    var rtcConfiguration: RTCConfiguration {
-        let configuration = RTCConfiguration()
+    /// The raw WebRTC configuration consumed by `LKRTCPeerConnectionFactory`.
+    var rtcConfiguration: LKRTCConfiguration {
+        let configuration = LKRTCConfiguration()
         configuration.iceServers = iceServers.map(\.rtcIceServer)
         configuration.iceTransportPolicy = iceTransportPolicy.rtcIceTransportPolicy
         configuration.candidateNetworkPolicy = candidateNetworkPolicy.rtcCandidateNetworkPolicy
@@ -24,8 +24,8 @@ extension CommunicationConfiguration {
 /// Conversion from Swift ICE server values to WebRTC ICE servers.
 extension CommunicationICEServer {
     /// The raw WebRTC ICE server represented by this value.
-    var rtcIceServer: RTCIceServer {
-        RTCIceServer(
+    var rtcIceServer: LKRTCIceServer {
+        LKRTCIceServer(
             urlStrings: urls,
             username: username,
             credential: credential
@@ -36,7 +36,7 @@ extension CommunicationICEServer {
 /// Conversion between Swift ICE candidates and WebRTC ICE candidates.
 extension CommunicationICECandidate {
     /// Creates a Swift candidate from a WebRTC candidate.
-    init(_ candidate: RTCIceCandidate) {
+    init(_ candidate: LKRTCIceCandidate) {
         self.init(
             sdp: candidate.sdp,
             sdpMLineIndex: candidate.sdpMLineIndex,
@@ -46,8 +46,8 @@ extension CommunicationICECandidate {
     }
 
     /// The raw WebRTC candidate represented by this value.
-    var rtcIceCandidate: RTCIceCandidate {
-        RTCIceCandidate(
+    var rtcIceCandidate: LKRTCIceCandidate {
+        LKRTCIceCandidate(
             sdp: sdp,
             sdpMLineIndex: sdpMLineIndex,
             sdpMid: sdpMid
@@ -58,7 +58,7 @@ extension CommunicationICECandidate {
 /// Conversion between Swift session descriptions and WebRTC session descriptions.
 extension CommunicationSessionDescription {
     /// Creates a Swift session description from a WebRTC session description.
-    init(_ description: RTCSessionDescription) {
+    init(_ description: LKRTCSessionDescription) {
         self.init(
             kind: Kind(description.type),
             sdp: description.sdp
@@ -66,8 +66,8 @@ extension CommunicationSessionDescription {
     }
 
     /// The raw WebRTC session description represented by this value.
-    var rtcSessionDescription: RTCSessionDescription {
-        RTCSessionDescription(
+    var rtcSessionDescription: LKRTCSessionDescription {
+        LKRTCSessionDescription(
             type: kind.rtcSdpType,
             sdp: sdp
         )
@@ -77,7 +77,7 @@ extension CommunicationSessionDescription {
 /// Conversion between Swift SDP description kinds and WebRTC SDP types.
 extension CommunicationSessionDescription.Kind {
     /// Creates a Swift description kind from a WebRTC SDP type.
-    fileprivate init(_ type: RTCSdpType) {
+    fileprivate init(_ type: LKRTCSdpType) {
         switch type {
         case .offer:
             self = .offer
@@ -93,7 +93,7 @@ extension CommunicationSessionDescription.Kind {
     }
 
     /// The raw WebRTC SDP type represented by this value.
-    fileprivate var rtcSdpType: RTCSdpType {
+    fileprivate var rtcSdpType: LKRTCSdpType {
         switch self {
         case .offer:
             .offer
@@ -110,13 +110,13 @@ extension CommunicationSessionDescription.Kind {
 /// Conversion from Swift offer/answer options to WebRTC media constraints.
 extension CommunicationOfferOptions {
     /// The raw WebRTC media constraints used while creating offers and answers.
-    var rtcConstraints: RTCMediaConstraints {
-        RTCMediaConstraints(
+    var rtcConstraints: LKRTCMediaConstraints {
+        LKRTCMediaConstraints(
             mandatoryConstraints: [
-                kRTCMediaConstraintsOfferToReceiveAudio: receivesAudio.rtcConstraintValue,
-                kRTCMediaConstraintsOfferToReceiveVideo: receivesVideo.rtcConstraintValue,
-                kRTCMediaConstraintsIceRestart: restartsICE.rtcConstraintValue,
-                kRTCMediaConstraintsVoiceActivityDetection: usesVoiceActivityDetection.rtcConstraintValue,
+                kLKRTCMediaConstraintsOfferToReceiveAudio: receivesAudio.rtcConstraintValue,
+                kLKRTCMediaConstraintsOfferToReceiveVideo: receivesVideo.rtcConstraintValue,
+                kLKRTCMediaConstraintsIceRestart: restartsICE.rtcConstraintValue,
+                kLKRTCMediaConstraintsVoiceActivityDetection: usesVoiceActivityDetection.rtcConstraintValue,
             ],
             optionalConstraints: nil
         )
@@ -127,14 +127,14 @@ extension CommunicationOfferOptions {
 private extension Bool {
     /// The string constant WebRTC expects for boolean media constraints.
     var rtcConstraintValue: String {
-        self ? kRTCMediaConstraintsValueTrue : kRTCMediaConstraintsValueFalse
+        self ? kLKRTCMediaConstraintsValueTrue : kLKRTCMediaConstraintsValueFalse
     }
 }
 
 /// Conversion from raw WebRTC signalling states.
 extension CommunicationSignalingState {
     /// Creates a Swift state wrapper from a WebRTC signalling state.
-    init(_ state: RTCSignalingState) {
+    init(_ state: LKRTCSignalingState) {
         switch state {
         case .stable:
             self = .stable
@@ -157,7 +157,7 @@ extension CommunicationSignalingState {
 /// Conversion from raw WebRTC peer connection states.
 extension CommunicationConnectionState {
     /// Creates a Swift state wrapper from a WebRTC peer connection state.
-    init(_ state: RTCPeerConnectionState) {
+    init(_ state: LKRTCPeerConnectionState) {
         switch state {
         case .new:
             self = .fresh
@@ -180,7 +180,7 @@ extension CommunicationConnectionState {
 /// Conversion from raw WebRTC ICE connection states.
 extension CommunicationICEConnectionState {
     /// Creates a Swift state wrapper from a WebRTC ICE connection state.
-    init(_ state: RTCIceConnectionState) {
+    init(_ state: LKRTCIceConnectionState) {
         switch state {
         case .new:
             self = .fresh
@@ -207,7 +207,7 @@ extension CommunicationICEConnectionState {
 /// Conversion from raw WebRTC ICE gathering states.
 extension CommunicationICEGatheringState {
     /// Creates a Swift state wrapper from a WebRTC ICE gathering state.
-    init(_ state: RTCIceGatheringState) {
+    init(_ state: LKRTCIceGatheringState) {
         switch state {
         case .new:
             self = .fresh
@@ -224,7 +224,7 @@ extension CommunicationICEGatheringState {
 /// Conversion from Swift ICE transport policy to WebRTC policy.
 extension CommunicationICETransportPolicy {
     /// The raw WebRTC ICE transport policy.
-    var rtcIceTransportPolicy: RTCIceTransportPolicy {
+    var rtcIceTransportPolicy: LKRTCIceTransportPolicy {
         switch self {
         case .all:
             .all
@@ -239,7 +239,7 @@ extension CommunicationICETransportPolicy {
 /// Conversion from Swift candidate network policy to WebRTC policy.
 extension CommunicationCandidateNetworkPolicy {
     /// The raw WebRTC candidate network policy.
-    var rtcCandidateNetworkPolicy: RTCCandidateNetworkPolicy {
+    var rtcCandidateNetworkPolicy: LKRTCCandidateNetworkPolicy {
         switch self {
         case .all:
             .all

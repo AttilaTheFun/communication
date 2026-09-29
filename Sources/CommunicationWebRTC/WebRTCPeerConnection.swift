@@ -2,7 +2,7 @@ import Foundation
 
 import Communication
 
-@preconcurrency internal import WebRTC
+@preconcurrency internal import LiveKitWebRTC
 
 /// The Apple implementation of `CommunicationPeerConnection`, backed by
 /// Google's WebRTC (the stasel/WebRTC binary distribution).
@@ -48,6 +48,10 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
     /// Events emitted by the underlying peer connection.
     public nonisolated let events: AsyncStream<CommunicationEvent>
 
+    /// This connection's audio for the application to play and feed, when
+    /// the configuration asked for `.application` playback.
+    public nonisolated let applicationAudio: (any CommunicationApplicationAudio)?
+
     /// Creates a peer connection.
     ///
     /// - Parameters:
@@ -56,6 +60,7 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
         let core = try PeerConnectionCore(configuration: configuration)
         self.core = core
         self.events = core.events
+        self.applicationAudio = core.applicationAudio
     }
 
     /// The local description as it currently stands, including whatever ICE

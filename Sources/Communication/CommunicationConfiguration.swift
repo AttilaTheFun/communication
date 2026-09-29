@@ -14,6 +14,9 @@ public struct CommunicationConfiguration: Sendable, Codable, Equatable {
 
     /// Whether IPv6 is allowed when connected through Wi-Fi.
     public var allowsIPv6OnWiFi: Bool
+    /// Who plays received audio and captures the microphone: the backend
+    /// (`.system`, the default) or the application, per connection.
+    public var audioPlayback: CommunicationAudioPlayback
 
     /// Creates a WebRTC peer connection configuration.
     ///
@@ -23,17 +26,35 @@ public struct CommunicationConfiguration: Sendable, Codable, Equatable {
     ///   - candidateNetworkPolicy: The network-cost policy for candidate gathering.
     ///   - gathersIceContinually: Whether ICE gathering continues after the initial pass.
     ///   - allowsIPv6OnWiFi: Whether IPv6 is allowed on Wi-Fi networks.
+    ///   - audioPlayback: Who plays received audio and captures the microphone.
     public init(
         iceServers: [CommunicationICEServer] = [.stun("stun:stun.l.google.com:19302")],
         iceTransportPolicy: CommunicationICETransportPolicy = .all,
         candidateNetworkPolicy: CommunicationCandidateNetworkPolicy = .all,
         gathersIceContinually: Bool = true,
-        allowsIPv6OnWiFi: Bool = true
+        allowsIPv6OnWiFi: Bool = true,
+        audioPlayback: CommunicationAudioPlayback = .system
     ) {
         self.iceServers = iceServers
         self.iceTransportPolicy = iceTransportPolicy
         self.candidateNetworkPolicy = candidateNetworkPolicy
         self.gathersIceContinually = gathersIceContinually
         self.allowsIPv6OnWiFi = allowsIPv6OnWiFi
+        self.audioPlayback = audioPlayback
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case iceServers, iceTransportPolicy, candidateNetworkPolicy, gathersIceContinually, allowsIPv6OnWiFi, audioPlayback
+    }
+
+    /// Decodes configurations written before `audioPlayback` existed as `.system`.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        iceServers = try c.decode([CommunicationICEServer].self, forKey: .iceServers)
+        iceTransportPolicy = try c.decode(CommunicationICETransportPolicy.self, forKey: .iceTransportPolicy)
+        candidateNetworkPolicy = try c.decode(CommunicationCandidateNetworkPolicy.self, forKey: .candidateNetworkPolicy)
+        gathersIceContinually = try c.decode(Bool.self, forKey: .gathersIceContinually)
+        allowsIPv6OnWiFi = try c.decode(Bool.self, forKey: .allowsIPv6OnWiFi)
+        audioPlayback = try c.decodeIfPresent(CommunicationAudioPlayback.self, forKey: .audioPlayback) ?? .system
     }
 }

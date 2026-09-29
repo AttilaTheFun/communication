@@ -25,6 +25,10 @@ public protocol CommunicationPeerConnection: Sendable {
     /// connection-state changes, ICE progress, data channels, remote media.
     nonisolated var events: AsyncStream<CommunicationEvent> { get }
 
+    /// The connection's audio for the application to play and feed, when its
+    /// configuration's `audioPlayback` is `.application`; nil otherwise.
+    nonisolated var applicationAudio: (any CommunicationApplicationAudio)? { get }
+
     /// The local description as it currently stands, including whatever ICE
     /// candidates have been gathered so far.
     var localDescription: CommunicationSessionDescription? { get async }
@@ -90,6 +94,11 @@ public protocol CommunicationPeerConnection: Sendable {
 
 // Protocols cannot carry default arguments; the conveniences live here so
 // call sites read the same against any implementation.
+extension CommunicationPeerConnection {
+    /// Backends without application audio have none.
+    public nonisolated var applicationAudio: (any CommunicationApplicationAudio)? { nil }
+}
+
 extension CommunicationPeerConnection {
     /// Opens a data channel with the default (ordered, reliable) delivery.
     public func openDataChannel(label: String) async throws {

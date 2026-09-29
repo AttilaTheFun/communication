@@ -12,8 +12,9 @@ WebRTC, meant to work across every platform Swift itself supports.
   does; higher-level code holds `any CommunicationPeerConnection` and stays
   oblivious to the platform underneath.
 
-- **`CommunicationWebRTC`** — the Apple (iOS, macOS) implementation, backed by
-  Google's WebRTC through the [stasel/WebRTC][stasel] binary distribution.
+- **`CommunicationWebRTC`** — the Apple (iOS, macOS, visionOS) implementation,
+  backed by Google's WebRTC through LiveKit's binary distribution
+  ([livekit/webrtc-xcframework][livekit], classes prefixed `LK`).
   `WebRTCConnector` makes `WebRTCPeerConnection`s.
 
 ```swift
@@ -38,11 +39,12 @@ ICE candidates reach the other side.
 
 ## Platforms
 
-`Communication` builds everywhere. `CommunicationWebRTC` is Apple-only today;
+`Communication` builds everywhere. `CommunicationWebRTC` covers iOS, macOS and
+visionOS (device and simulator); there is no Metal video view on visionOS;
 Android, Linux and Windows implementations of the same API are planned, either
 as further targets here or by adapting a platform stack behind the protocol.
 
-[stasel]: https://github.com/stasel/WebRTC
+[livekit]: https://github.com/livekit/webrtc-xcframework
 
 ## Media
 
@@ -59,3 +61,31 @@ connection) is not WebRTC's business and lives in the Convo Protocol.
 
 `Sources/` (Communication, CommunicationWebRTC), `Tests/`, `Examples/`
 (`swift run DataChannelEcho`), `Docs/`, `Tools/`.
+
+## Application audio (per-peer playback)
+
+By default the backend plays every connection's received audio, mixed, and
+captures the microphone itself. With
+`CommunicationConfiguration(audioPlayback: .application)` a connection's
+audio is the application's instead: `peer.applicationAudio` pulls that peer's
+decoded audio alone (`renderReceived`, mono Float32 at 48 kHz, real-time
+safe) and takes microphone audio in (`deliverCaptured`), and
+`makeMicrophoneTrack()` makes the local track it feeds. That is what spatial
+or per-peer mixing needs. On Apple platforms `WebRTCSpatialAudio` does the
+usual thing with it: each peer a positional source in an
+`AVAudioEnvironmentNode` (HRTF), the microphone with voice processing feeding
+every connection.
+
+```swift
+let spatial = WebRTCSpatialAudio()
+try spatial.start()
+let peer = try WebRTCConnector().makePeerConnection(
+    configuration: CommunicationConfiguration(iceServers: servers, audioPlayback: .application))
+let audio = peer.applicationAudio!
+_ = try await peer.addTrack(try audio.makeMicrophoneTrack(), streamIDs: ["voice"])
+let source = spatial.add(audio)
+source.position = AVAudio3DPoint(x: 1, y: 0, z: -2)   // from the peer's pose
+```
+
+Each such connection has a WebRTC factory of its own (that is how its playout
+is one peer), so keep a room to a mesh of a handful of peers.
