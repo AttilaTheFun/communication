@@ -1,13 +1,13 @@
 {
-  "originHash" : "df41ec13d75ba30fa145a48b930b494e8c04e44ca605fd05fb45dbdbe8a02fbd",
+  "originHash" : "a3f866a51f379beaee15ea718d0d82f80edc043744e1c45682a046183465348f",
   "pins" : [
     {
       "identity" : "webrtc-xcframework",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/livekit/webrtc-xcframework",
+      "location" : "https://github.com/AttilaTheFun/webrtc-xcframework",
       "state" : {
-        "revision" : "c73deceaddd9c07293871ae28f24d4326cc86d62",
-        "version" : "150.7871.2"
+        "revision" : "9ec974a6011838a557425f8252622bbcfc17d562",
+        "version" : "150.7871.2-privacy-fix"
       }
     }
   ],

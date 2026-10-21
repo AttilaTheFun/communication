@@ -26,7 +26,11 @@ let package = Package(
     dependencies: [
         // LiveKit's packaging of Google's WebRTC (class prefix LK): the same
         // Objective-C API as stasel's builds, with visionOS and tvOS slices.
-        .package(url: "https://github.com/livekit/webrtc-xcframework", exact: "150.7871.02"),
+        // For now our fork's 150.7871.02 with the macOS and Catalyst privacy
+        // manifest moved out of a nested Versions/A/Versions directory (which
+        // breaks rules_apple), binaries unchanged; back to
+        // livekit/webrtc-xcframework once webrtc-sdk/webrtc#318 is released.
+        .package(url: "https://github.com/AttilaTheFun/webrtc-xcframework", exact: "150.7871.02-privacy-fix"),
     ],
     targets: [
         .target(name: "Communication"),
