@@ -21,6 +21,7 @@ let package = Package(
     platforms: [.iOS(.v16), .macOS(.v13), .visionOS("26.0")],
     products: [
         .library(name: "Communication", targets: ["Communication"]),
+        .library(name: "CommunicationCore", targets: ["CommunicationCore"]),
         .library(name: "CommunicationWebRTC", targets: ["CommunicationWebRTC"]),
     ],
     dependencies: [
@@ -35,6 +36,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "Communication"),
+        // The implementation every platform shares, over a WebRTCHost (the
+        // platform's WebRTC, in W3C terms): plain Swift, no #if.
+        .target(name: "CommunicationCore", dependencies: ["Communication"]),
+        .testTarget(name: "CommunicationCoreTests", dependencies: ["Communication", "CommunicationCore"]),
         .target(
             name: "CommunicationWebRTC",
             dependencies: [
