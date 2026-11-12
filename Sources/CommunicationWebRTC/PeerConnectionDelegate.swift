@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Foundation
 
 import Communication
@@ -118,3 +119,4 @@ final class PeerConnectionDelegate: NSObject, LKRTCPeerConnectionDelegate, @unch
         if let track = rtpReceiver.track { emit(.trackRemoved(trackID: track.trackId)) }
     }
 }
+#endif

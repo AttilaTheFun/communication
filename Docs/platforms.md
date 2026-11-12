@@ -6,6 +6,11 @@ It's a thin wrapper over WebRTC with the same API on every platform Isomer
 supports: iOS, macOS and visionOS natively, and the web (wasm), Android,
 Linux and Windows.
 
+The shape (Logan, 2026-11-11): use Isomer's facilities for injecting native
+dependencies on the web and Android, and keep as much of the code as
+possible in shared Swift, cross-compiled everywhere, without per-platform
+branches.
+
 ## Today
 
 - `Communication`: the API. It's spec-shaped (`CommunicationPeerConnection`,
@@ -14,103 +19,100 @@ Linux and Windows.
 - `CommunicationWebRTC`: the Apple backend, over LiveKit's
   `LiveKitWebRTC.xcframework` (Objective-C, `LK` prefix). It covers iOS,
   macOS and visionOS, through our fork until webrtc-sdk/webrtc#318 ships
-  (`README.md`, To do).
-- Nothing else. Convo's web and Android clients do WebRTC outside this
-  package, through Convo's own coarse host interface (`ConvoHost`:
-  `createOffer`, `acceptOffer`, `sendFrame`), which carries data channels
-  only. It's implemented in JavaScript over the browser's `RTCPeerConnection`
-  and in Kotlin over `stream-webrtc-android` (libwebrtc M125). Those become
-  this package's backends, and Convo moves onto the full API.
+  (`README.md`, To do). It holds the whole implementation (state, events,
+  the data-channel registry, conversions), written against Objective-C
+  types, so none of it is shared yet.
+- Convo's web and Android clients do WebRTC outside this package, through
+  Convo's own coarse host interface (`ConvoHost`: `createOffer`,
+  `acceptOffer`, `sendFrame`), which carries data channels only. It's
+  implemented in JavaScript over the browser's `RTCPeerConnection` and in
+  Kotlin over `stream-webrtc-android` (libwebrtc M125).
 
-## Backends
+## The shape: one shared implementation over a small host
 
-Three implementations of one API. Each is a target the consumer picks per
-platform; `CommunicationConnector` hands out peer connections either way.
+```
+Communication              the API (as today)
+CommunicationCore          the implementation, shared Swift, no #if
+  └─ WebRTCHost            the primitives it needs, a protocol
+       ├─ Apple adapter    Swift over LiveKit's xcframework
+       ├─ web              JavaScript over RTCPeerConnection, injected (swift_ffi)
+       ├─ Android          Kotlin over org.webrtc, injected (swift_ffi)
+       └─ Linux, Windows   Swift over a C shim over libwebrtc (prebuilt)
+```
 
-| Backend | Platforms | WebRTC underneath |
-|---|---|---|
-| `CommunicationWebRTC` (today's) | iOS, macOS, visionOS | LiveKit's xcframework (Objective-C) |
-| `CommunicationNative` (new) | Linux, Windows, Android | libwebrtc's C++ API, prebuilt |
-| `CommunicationBrowser` (new) | web (wasm) | the browser's `RTCPeerConnection` |
+- **`CommunicationCore`** implements `CommunicationPeerConnection` and
+  `CommunicationConnector` once: connection and ICE state, the `AsyncStream`
+  of events, the data-channel registry, waiting on gathering, ICE restarts,
+  and the conversions between API values and the host's plain values. It's
+  the same Swift on every platform, with no `#if`.
+- **`WebRTCHost`** is the narrow surface underneath, plain values only (ids,
+  strings, bytes, small enums):
+  - create and close a connection;
+  - create an offer or answer, and set the local and remote descriptions;
+  - add a remote candidate and restart ICE;
+  - open a data channel, send text or bytes, and close it;
+  - events back (candidates, state changes, a data channel opened, a message
+    received), keyed by connection and channel id.
 
-### Native: libwebrtc in C++, for Linux, Windows and Android
-
-LiveKit publishes prebuilt libwebrtc static libraries with headers for
-`linux-{x64,arm64}`, `win-{x64,arm64}` and `android-{arm,arm64,x64}` (also
-mac and iOS), as the `webrtc-<commit>` releases of livekit/rust-sdks. They
-come from the same webrtc-sdk tree as the Apple xcframework.
-
-- A small C++ target, `CWebRTCShim`, wraps the few classes we use
-  (`PeerConnectionFactory`, `PeerConnection`, `DataChannel`, observers) behind
-  a C API with plain structs and callbacks. Swift calls the C API; it doesn't
-  import libwebrtc's C++ headers. That keeps C++ interop out of the public
-  module, and builds one way with SwiftPM and Bazel.
-- `CommunicationNative` turns the callbacks into the same `AsyncStream`
-  events and async methods as the Apple backend.
-- The binary arrives per platform: SwiftPM as an artifact bundle of static
-  libraries (SE-0482), Bazel as an `http_archive` per platform.
-- Android: Isomer apps run Swift natively on Android, so this one backend
-  covers it with no Kotlin. libwebrtc needs the JVM and the app's Context
-  once at startup (`webrtc::JVM::Initialize`, the network monitor). The
-  shim exports `communication_android_initialize(JavaVM*, jobject context)`.
-  Isomer 0.51's `isomer_android_app(native_initializers = [...])` calls it at
-  `IsomerRuntime.prepare`; other apps call it themselves.
-- Media on these platforms (capture, playback) comes after data channels.
-  libwebrtc's audio device module has platform backends; video capture
-  needs a per-platform source.
-
-### Browser: RTCPeerConnection, for the web
-
-Wasm can't link libwebrtc; the browser has WebRTC already.
-
-- `CommunicationBrowser` declares wasm imports in a module of its own,
-  `communication` (`@_extern(wasm, module: "communication", name: …)`), and
-  exports the callbacks the page calls back on. It depends on nothing,
-  Isomer included.
-- `communication.js`, shipped with the package, implements those imports over
-  `RTCPeerConnection` and `RTCDataChannel`. A page adds its imports to the
-  wasm instance's import object. Isomer's boot can do that for an Isomer app
-  (to settle with Isomer).
-- Isomer's alternative is a swift_ffi `@ExportedInterface`, as
-  `IsomerNetworkHost` does for URLSession. That ties the package to Isomer,
-  so it's not the plan; the open question below says why.
+  It's an Isomer swift_ffi `@ExportedInterface`, as `IsomerNetworkHost` is
+  for URLSession, so the web and Android implement it in their own language
+  and Isomer injects it. Native code calls it as an ordinary Swift protocol.
+- **Adapters** are the only per-platform code, each as thin as it can be:
+  - **Web:** JavaScript over `RTCPeerConnection` and `RTCDataChannel`,
+    injected as a dependency the way Isomer's network host is. It starts as
+    Convo's `index.html` WebRTC code.
+  - **Android:** Kotlin over `org.webrtc` (`stream-webrtc-android`), injected
+    the same way. It starts as Convo's `AppServices.kt` WebRTC code. The Java
+    layer handles libwebrtc's JVM and Context setup itself.
+  - **Apple:** Swift over LiveKit's xcframework, conforming to `WebRTCHost`.
+    Today's backend shrinks to this, and its logic moves into the core.
+  - **Linux and Windows:** Swift over a small C shim (`CWebRTCShim`) over
+    libwebrtc's C++ API. It uses LiveKit's prebuilt static libwebrtc
+    (livekit/rust-sdks `webrtc-<commit>` releases: `linux-{x64,arm64}`,
+    `win-{x64,arm64}`), from the same webrtc-sdk tree as the Apple
+    xcframework. Swift sees only the shim's C API, so no C++ interop shows in
+    a public module.
+- **Media** (tracks, capture, playback, video views) comes after data
+  channels, on the same pattern: the core keeps the API's logic, and the host
+  gains track primitives. Capture and rendering are inherently per platform
+  and live in the adapters.
 
 ## Settings for every target
 
 - `swift-tools-version: 6.2` or later.
-- `.swiftLanguageMode(.v6)` (strict concurrency is the mode's default).
+- The Swift 6 language mode (`swiftLanguageModes: [.v6]`; strict concurrency
+  is its default).
 - `.treatAllWarnings(as: .error)` (SE-0443; settings, not `unsafeFlags`, so
   dependents can take the package).
 - No `nonisolated(unsafe)`. `@unchecked Sendable` only on the small classes
-  that guard C or Objective-C handles with a lock, each with a comment saying
-  why.
+  that guard a native handle with a lock, each with a comment saying why.
 
 ## Order
 
-1. The package settings above, on today's two targets.
-2. `CommunicationNative` with data channels: Linux first, in a Shireworks
-   `linux` lease, against LiveKit's prebuilt libwebrtc, with a loopback test
-   (two peer connections in one process) as on Apple. Then Windows, then
-   Android.
-3. `CommunicationBrowser` with data channels, tested in a browser on a
-   Shireworks lease, with the same loopback in one page.
-4. Convo moves its web and Android clients from `ConvoHost`'s WebRTC calls to
-   Communication, as part of its move to Isomer 0.50.
-5. Media on the native and browser backends.
-6. Public, when Logan says so.
+1. Done (2026-11-11): the settings above. The Apple backend is
+   compile-gated (`#if canImport(LiveKitWebRTC)`) and LiveKit's binary is
+   Apple-only, so the package builds on Linux (a Shireworks container with
+   swift:6.4.2-noble).
+2. `WebRTCHost` and `CommunicationCore`, with an in-memory host for tests:
+   two peers wired in one process, so the core's logic is tested on every
+   platform without WebRTC.
+3. The Apple adapter, with the core in place of today's backend, keeping its
+   loopback test green.
+4. The web and Android adapters, from Convo's JavaScript and Kotlin, injected
+   through Isomer.
+5. The Linux and Windows adapter over the C shim.
+6. Convo moves onto Communication as part of its move to Isomer 0.50, and
+   `ConvoHost` drops its WebRTC calls.
+7. Media.
+8. Public, when Logan says so.
 
 ## Open questions
 
-- **Web glue: settled** (with Isomer, 2026-11-11). The package owns it, and
-  Isomer 0.51's `imports` hook takes it.
+- **Isomer dependency.** The host is a swift_ffi interface, so the package
+  depends on Isomer's Swift package for `IsomerFFI`. Native Apple apps that
+  don't use Isomer still build; the macros there produce plain Swift.
 - **Wasm inside native hosts.** From Isomer 0.52, native hosts run wasm builds
-  in the platforms' JS engines. WKWebView has RTCPeerConnection, so
-  `communication.js` works there as is. Android's JavaScriptSandbox has none,
-  so a wasm build there would need the host to bridge to the native backend.
-  Natively compiled apps, the usual case, aren't affected.
-- **Android: native or Kotlin.** The native backend makes Android the same
-  code as Linux and Windows. A Kotlin backend (over `stream-webrtc-android`, as
-  Convo has today) would avoid JNI startup. The plan assumes native, falling
-  back to Kotlin if libwebrtc's Android startup without its Java layer proves
-  brittle.
+  in the platforms' JS engines. A wasm build on Android, inside
+  JavaScriptSandbox, has no RTCPeerConnection. There the injected host is the
+  Kotlin one, which the swift_ffi interface already allows.
 - **Visibility.** The repository is private today.

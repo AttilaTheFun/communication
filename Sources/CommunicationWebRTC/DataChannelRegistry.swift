@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Foundation
 
 import Communication
@@ -96,7 +97,9 @@ extension CommunicationDataChannelConfiguration {
         let configuration = LKRTCDataChannelConfiguration()
         configuration.isOrdered = ordered
         if let maxRetransmitTimeMilliseconds {
-            configuration.maxRetransmitTimeMs = maxRetransmitTimeMilliseconds
+            // WebRTC's maxPacketLifeTime (milliseconds); maxRetransmitTimeMs is
+            // its deprecated old name.
+            configuration.maxPacketLifeTime = Int32(maxRetransmitTimeMilliseconds)
         }
         if let maxRetransmits {
             configuration.maxRetransmits = Int32(maxRetransmits)
@@ -108,3 +111,4 @@ extension CommunicationDataChannelConfiguration {
         return configuration
     }
 }
+#endif

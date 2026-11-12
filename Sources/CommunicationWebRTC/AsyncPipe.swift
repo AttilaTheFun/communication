@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Foundation
 
 import Communication
@@ -37,3 +38,4 @@ final class AsyncPipe<Element: Sendable>: @unchecked Sendable {
         }
     }
 }
+#endif

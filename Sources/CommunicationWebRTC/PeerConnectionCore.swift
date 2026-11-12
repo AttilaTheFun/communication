@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Foundation
 
 import Communication
@@ -290,3 +291,4 @@ final class PeerConnectionCore: @unchecked Sendable {
 }
 
 /// Lets the delegate, created before the core, reach the core afterwards.
+#endif

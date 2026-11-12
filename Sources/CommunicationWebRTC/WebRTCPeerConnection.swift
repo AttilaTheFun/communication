@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Foundation
 
 import Communication
@@ -176,3 +177,4 @@ public actor WebRTCPeerConnection: CommunicationPeerConnection {
     public var senders: [any CommunicationRtpSender] { core.senders }
     public var receivers: [any CommunicationRtpReceiver] { core.receivers }
 }
+#endif

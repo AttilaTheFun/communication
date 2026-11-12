@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import AVFoundation
 import Communication
 import Foundation
@@ -227,3 +228,4 @@ extension CommunicationTransceiverDirection {
 extension CommunicationMediaKind {
     var rtcMediaType: LKRTCRtpMediaType { self == .video ? .video : .audio }
 }
+#endif

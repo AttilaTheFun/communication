@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Communication
 import CommunicationWebRTC
 import Foundation
@@ -63,3 +64,4 @@ final class ApplicationAudioTests: XCTestCase {
         }
     }
 }
+#endif

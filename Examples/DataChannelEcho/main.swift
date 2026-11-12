@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Communication
 import CommunicationWebRTC
 import Foundation
@@ -38,3 +39,11 @@ struct DataChannelEcho {
         await a.close(); await b.close()
     }
 }
+#else
+@main
+enum DataChannelEcho {
+    static func main() {
+        print("DataChannelEcho runs on the Apple backend (CommunicationWebRTC); this platform has none yet.")
+    }
+}
+#endif

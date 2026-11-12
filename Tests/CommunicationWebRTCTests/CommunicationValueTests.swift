@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Communication
 import CommunicationWebRTC
 import XCTest
@@ -121,3 +122,4 @@ final class CommunicationValueTests: XCTestCase {
         XCTAssertNotNil(callerSDP)
     }
 }
+#endif

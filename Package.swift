@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 // Communication: a consistent, idiomatic, async, strict-concurrency Swift
 // API for WebRTC.
@@ -39,7 +39,13 @@ let package = Package(
             name: "CommunicationWebRTC",
             dependencies: [
                 "Communication",
-                .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
+                // LiveKit's xcframework has Apple slices only; elsewhere the
+                // target's files are empty (`#if canImport(LiveKitWebRTC)`).
+                .product(
+                    name: "LiveKitWebRTC",
+                    package: "webrtc-xcframework",
+                    condition: .when(platforms: [.iOS, .macOS, .visionOS, .tvOS, .macCatalyst])
+                ),
             ]
         ),
         .testTarget(
@@ -52,5 +58,11 @@ let package = Package(
             dependencies: ["Communication", "CommunicationWebRTC"],
             path: "Examples/DataChannelEcho"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )
+
+// Swift 6 (strict concurrency) everywhere, and no warnings left standing.
+for target in package.targets {
+    target.swiftSettings = (target.swiftSettings ?? []) + [.treatAllWarnings(as: .error)]
+}

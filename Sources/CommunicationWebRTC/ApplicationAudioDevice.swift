@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import AudioToolbox
 import Communication
 import Foundation
@@ -132,3 +133,4 @@ final class ApplicationAudioDevice: NSObject, LKRTCAudioDevice, CommunicationApp
     func startRecording() -> Bool { state.withLock { $0.recording = true }; return true }
     func stopRecording() -> Bool { state.withLock { $0.recording = false }; return true }
 }
+#endif

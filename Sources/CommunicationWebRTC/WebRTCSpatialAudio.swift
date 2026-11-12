@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import AVFoundation
 import Communication
 import os
@@ -174,3 +175,4 @@ public final class WebRTCSpatialAudio {
         engine.detach(node)
     }
 }
+#endif

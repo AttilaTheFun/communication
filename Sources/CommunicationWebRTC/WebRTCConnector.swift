@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 import Communication
 
 /// The Apple platform's `CommunicationConnector`: peer connections backed by
@@ -13,3 +14,4 @@ public struct WebRTCConnector: CommunicationConnector {
         try WebRTCMediaDevices()
     }
 }
+#endif

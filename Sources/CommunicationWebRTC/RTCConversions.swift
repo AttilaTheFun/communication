@@ -1,3 +1,4 @@
+#if canImport(LiveKitWebRTC)
 // Conversions between the Communication API's value types and the raw
 // WebRTC types this implementation drives. Gathered in one file so the
 // API module stays free of any WebRTC import, and `fileprivate` helpers
@@ -248,3 +249,4 @@ extension CommunicationCandidateNetworkPolicy {
         }
     }
 }
+#endif
