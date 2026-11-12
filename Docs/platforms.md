@@ -51,8 +51,10 @@ come from the same webrtc-sdk tree as the Apple xcframework.
   libraries (SE-0482), Bazel as an `http_archive` per platform.
 - Android: Isomer apps run Swift natively on Android, so this one backend
   covers it with no Kotlin. libwebrtc needs the JVM and the app's Context
-  once at startup (`webrtc::JVM::Initialize`, the network monitor). The host
-  hands those over in one call; Isomer's Android host can make it.
+  once at startup (`webrtc::JVM::Initialize`, the network monitor). The
+  shim exports `communication_android_initialize(JavaVM*, jobject context)`.
+  Isomer 0.51's `isomer_android_app(native_initializers = [...])` calls it at
+  `IsomerRuntime.prepare`; other apps call it themselves.
 - Media on these platforms (capture, playback) comes after data channels.
   libwebrtc's audio device module has platform backends; video capture
   needs a per-platform source.
@@ -99,11 +101,13 @@ Wasm can't link libwebrtc; the browser has WebRTC already.
 
 ## Open questions
 
-- **Web glue.** Should the package own the browser glue (its own wasm import
-  module and `communication.js`, no dependencies), or should it be a
-  swift_ffi interface, as Isomer suggested? The first keeps Communication
-  usable without Isomer; the second fits Isomer's other host services. The
-  plan assumes the first, with Isomer's boot taking a package's imports.
+- **Web glue: settled** (with Isomer, 2026-11-11). The package owns it, and
+  Isomer 0.51's `imports` hook takes it.
+- **Wasm inside native hosts.** From Isomer 0.52, native hosts run wasm builds
+  in the platforms' JS engines. WKWebView has RTCPeerConnection, so
+  `communication.js` works there as is. Android's JavaScriptSandbox has none,
+  so a wasm build there would need the host to bridge to the native backend.
+  Natively compiled apps, the usual case, aren't affected.
 - **Android: native or Kotlin.** The native backend makes Android the same
   code as Linux and Windows. A Kotlin backend (over `stream-webrtc-android`, as
   Convo has today) would avoid JNI startup. The plan assumes native, falling
