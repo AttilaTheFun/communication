@@ -118,9 +118,11 @@ CommunicationCore          the implementation, shared Swift, no #if
    compile-gated (`#if canImport(LiveKitWebRTC)`) and LiveKit's binary is
    Apple-only, so the package builds on Linux (a Shireworks container with
    swift:6.4.2-noble).
-2. `WebRTCHost` and `CommunicationCore`, with an in-memory host for tests:
-   two peers wired in one process, so the core's logic is tested on every
-   platform without WebRTC.
+2. Done (2026-11-11): `WebRTCHost` and `CommunicationCore` for signaling and
+   data channels, with a loopback host in the tests (two peers in one process,
+   no WebRTC). Eight tests pass on Linux. The host speaks W3C: JSON
+   dictionaries, W3C state names, `[UInt8]` bytes, pulled events. A connection
+   that's dropped disconnects its host connection.
 3. The Apple adapter, with the core in place of today's backend, keeping its
    loopback test green.
 4. The web and Android adapters, from Convo's JavaScript and Kotlin, injected
