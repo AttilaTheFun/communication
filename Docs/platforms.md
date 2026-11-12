@@ -57,6 +57,31 @@ CommunicationCore          the implementation, shared Swift, no #if
   It's an Isomer swift_ffi `@ExportedInterface`, as `IsomerNetworkHost` is
   for URLSession, so the web and Android implement it in their own language
   and Isomer injects it. Native code calls it as an ordinary Swift protocol.
+  Settled with Isomer (2026-11-11):
+  - **Events are pulled.** `func nextEvent(connection: Int32) async throws ->
+    WebRTCEvent` (an `@ExportedEnum` or `@ExportedStruct`: a candidate, a
+    state change, a channel opened, a message, a close). The core awaits it in
+    a loop, as Isomer's WebSocketHost `next(id:)` works. It's async
+    everywhere (a Promise in JS, a suspend fun in Kotlin), keeps one
+    interface, and gives backpressure. Swift can't hand the host a closure or
+    an interface, so the host doesn't push.
+  - **Bytes** are `[UInt8]` (a Uint8Array in JS, a ByteArray in Kotlin), not
+    base64.
+  - **Installing the host:** an `@ExportedFunction`
+    (`installCommunicationHost(_:)`), which Android's Kotlin calls, and so does
+    Swift on Apple, Linux and Windows. On wasm, it's a dependency key the core
+    looks up, as Isomer's `installInjectedNetworkHosts` reads `isomerHTTP`.
+  - **The web glue** is a JS module exporting `webRTCHost(Dependencies)`; a
+    page passes it as `boot({ dependencies: { ...webRTCHost(Dependencies) } })`,
+    as Isomer's `network.js` does with `browserNetworkHosts`.
+  - **The Kotlin** compiles with Isomer's runtime (the generated interface is in
+    `dev.isomer.runtime`): `isomer_android_app(services_kt = […],
+    services_installer = "CommunicationHost.install()", services_deps =
+    [org.webrtc's Maven artifact])`.
+  - **Packaging:** Communication is a Bazel module too, published to
+    AttilaTheFun/bazel_registry, as Isomer is both a Swift package and a Bazel
+    module, so apps reach its JS and Kotlin as labels (filegroups). Through
+    rules_swift_package_manager alone, non-Swift files aren't addressable.
 - **Adapters** are the only per-platform code, each as thin as it can be:
   - **Web:** JavaScript over `RTCPeerConnection` and `RTCDataChannel`,
     injected as a dependency the way Isomer's network host is. It starts as
