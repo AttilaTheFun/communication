@@ -8,6 +8,10 @@
 - Media: the WebRTC media API (`CommunicationMedia.swift`) and, in the Apple
   backend, capture through `WebRTCMediaDevices` and Metal video views.
 
+- Platforms: `platforms.md`, the plan for the same API on every platform Isomer
+  supports (Apple, native libwebrtc for Linux, Windows and Android, the
+  browser for the web).
+
 ## To do
 
 - **Use LiveKit's published build again.** `Package.swift` takes
