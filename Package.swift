@@ -44,6 +44,7 @@ let package = Package(
             name: "CommunicationWebRTC",
             dependencies: [
                 "Communication",
+                "CommunicationCore",
                 // LiveKit's xcframework has Apple slices only; elsewhere the
                 // target's files are empty (`#if canImport(LiveKitWebRTC)`).
                 .product(
@@ -55,7 +56,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CommunicationWebRTCTests",
-            dependencies: ["CommunicationWebRTC"]
+            dependencies: ["CommunicationWebRTC", "CommunicationCore"]
         ),
         // Examples/: small programs showing the package; not products.
         .executableTarget(

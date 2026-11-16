@@ -4,67 +4,67 @@ import Foundation
 /// The W3C WebRTC dictionaries and states a `WebRTCHost` speaks, and their
 /// mapping to and from the API's types: done once, here, for every
 /// platform.
-enum W3C {
-    struct Configuration: Codable, Equatable {
-        struct ICEServer: Codable, Equatable {
-            var urls: [String]
-            var username: String?
-            var credential: String?
+package enum W3C {
+    package struct Configuration: Codable, Equatable {
+        package struct ICEServer: Codable, Equatable {
+            package var urls: [String]
+            package var username: String?
+            package var credential: String?
         }
 
         /// libwebrtc's own options, which browsers don't have.
-        struct Native: Codable, Equatable {
+        package struct Native: Codable, Equatable {
             /// "all" or "lowCost".
-            var candidateNetworkPolicy: String
-            var gathersIceContinually: Bool
-            var allowsIPv6OnWiFi: Bool
+            package var candidateNetworkPolicy: String
+            package var gathersIceContinually: Bool
+            package var allowsIPv6OnWiFi: Bool
         }
 
-        var iceServers: [ICEServer]
+        package var iceServers: [ICEServer]
         /// "all" or "relay" (W3C); libwebrtc also takes "noHost".
-        var iceTransportPolicy: String
-        var native: Native
+        package var iceTransportPolicy: String
+        package var native: Native
     }
 
-    struct SessionDescription: Codable, Equatable {
+    package struct SessionDescription: Codable, Equatable {
         /// "offer", "pranswer", "answer" or "rollback".
-        var type: String
-        var sdp: String
+        package var type: String
+        package var sdp: String
     }
 
-    struct ICECandidate: Codable, Equatable {
-        var candidate: String
-        var sdpMid: String?
-        var sdpMLineIndex: Int32?
+    package struct ICECandidate: Codable, Equatable {
+        package var candidate: String
+        package var sdpMid: String?
+        package var sdpMLineIndex: Int32?
         /// The STUN or TURN server it came from (libwebrtc only).
-        var url: String?
+        package var url: String?
     }
 
-    struct OfferOptions: Codable, Equatable {
-        var iceRestart: Bool
-        var offerToReceiveAudio: Bool
-        var offerToReceiveVideo: Bool
-        var voiceActivityDetection: Bool
+    package struct OfferOptions: Codable, Equatable {
+        package var iceRestart: Bool
+        package var offerToReceiveAudio: Bool
+        package var offerToReceiveVideo: Bool
+        package var voiceActivityDetection: Bool
     }
 
-    struct DataChannelInit: Codable, Equatable {
-        var ordered: Bool
-        var maxPacketLifeTime: Int?
-        var maxRetransmits: Int?
+    package struct DataChannelInit: Codable, Equatable {
+        package var ordered: Bool
+        package var maxPacketLifeTime: Int?
+        package var maxRetransmits: Int?
         /// With `negotiated`, both sides open it themselves under this id.
-        var id: Int32?
-        var negotiated: Bool
+        package var id: Int32?
+        package var negotiated: Bool
     }
 
     // MARK: Encoding
 
-    static func json<T: Encodable>(_ value: T) -> String {
+    package static func json<T: Encodable>(_ value: T) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         return (try? String(decoding: encoder.encode(value), as: UTF8.self)) ?? "{}"
     }
 
-    static func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
+    package static func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         do {
             return try JSONDecoder().decode(type, from: Data(json.utf8))
         } catch {
@@ -72,7 +72,7 @@ enum W3C {
         }
     }
 
-    static func configuration(_ configuration: CommunicationConfiguration) -> Configuration {
+    package static func configuration(_ configuration: CommunicationConfiguration) -> Configuration {
         Configuration(
             iceServers: configuration.iceServers.map {
                 .init(urls: $0.urls, username: $0.username, credential: $0.credential)
@@ -86,7 +86,7 @@ enum W3C {
         )
     }
 
-    static func sessionDescription(_ description: CommunicationSessionDescription) -> SessionDescription {
+    package static func sessionDescription(_ description: CommunicationSessionDescription) -> SessionDescription {
         let type = switch description.kind {
         case .offer: "offer"
         case .provisionalAnswer: "pranswer"
@@ -96,7 +96,7 @@ enum W3C {
         return SessionDescription(type: type, sdp: description.sdp)
     }
 
-    static func sessionDescription(_ description: SessionDescription) throws -> CommunicationSessionDescription {
+    package static func sessionDescription(_ description: SessionDescription) throws -> CommunicationSessionDescription {
         let kind: CommunicationSessionDescription.Kind = switch description.type {
         case "offer": .offer
         case "pranswer": .provisionalAnswer
@@ -108,15 +108,15 @@ enum W3C {
         return CommunicationSessionDescription(kind: kind, sdp: description.sdp)
     }
 
-    static func candidate(_ candidate: CommunicationICECandidate) -> ICECandidate {
+    package static func candidate(_ candidate: CommunicationICECandidate) -> ICECandidate {
         ICECandidate(candidate: candidate.sdp, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex, url: candidate.serverURL)
     }
 
-    static func candidate(_ candidate: ICECandidate) -> CommunicationICECandidate {
+    package static func candidate(_ candidate: ICECandidate) -> CommunicationICECandidate {
         CommunicationICECandidate(sdp: candidate.candidate, sdpMLineIndex: candidate.sdpMLineIndex ?? 0, sdpMid: candidate.sdpMid, serverURL: candidate.url)
     }
 
-    static func offerOptions(_ options: CommunicationOfferOptions) -> OfferOptions {
+    package static func offerOptions(_ options: CommunicationOfferOptions) -> OfferOptions {
         OfferOptions(
             iceRestart: options.restartsICE,
             offerToReceiveAudio: options.receivesAudio,
@@ -125,7 +125,7 @@ enum W3C {
         )
     }
 
-    static func dataChannelInit(_ configuration: CommunicationDataChannelConfiguration) -> DataChannelInit {
+    package static func dataChannelInit(_ configuration: CommunicationDataChannelConfiguration) -> DataChannelInit {
         DataChannelInit(
             ordered: configuration.ordered,
             maxPacketLifeTime: configuration.maxRetransmitTimeMilliseconds,
@@ -135,9 +135,65 @@ enum W3C {
         )
     }
 
+    // MARK: Back to the API (for adapters over libwebrtc)
+
+    package static func configuration(_ configuration: Configuration) -> CommunicationConfiguration {
+        CommunicationConfiguration(
+            iceServers: configuration.iceServers.map {
+                CommunicationICEServer(urls: $0.urls, username: $0.username, credential: $0.credential)
+            },
+            iceTransportPolicy: CommunicationICETransportPolicy(rawValue: configuration.iceTransportPolicy) ?? .all,
+            candidateNetworkPolicy: CommunicationCandidateNetworkPolicy(rawValue: configuration.native.candidateNetworkPolicy) ?? .all,
+            gathersIceContinually: configuration.native.gathersIceContinually,
+            allowsIPv6OnWiFi: configuration.native.allowsIPv6OnWiFi
+        )
+    }
+
+    package static func offerOptions(_ options: OfferOptions) -> CommunicationOfferOptions {
+        CommunicationOfferOptions(
+            receivesAudio: options.offerToReceiveAudio,
+            receivesVideo: options.offerToReceiveVideo,
+            restartsICE: options.iceRestart,
+            usesVoiceActivityDetection: options.voiceActivityDetection
+        )
+    }
+
+    package static func dataChannelConfiguration(_ channel: DataChannelInit) -> CommunicationDataChannelConfiguration {
+        CommunicationDataChannelConfiguration(
+            ordered: channel.ordered,
+            maxRetransmitTimeMilliseconds: channel.maxPacketLifeTime,
+            maxRetransmits: channel.maxRetransmits,
+            channelID: channel.negotiated ? channel.id : nil
+        )
+    }
+
+    package static func name(_ state: CommunicationSignalingState) -> String {
+        switch state {
+        case .stable: "stable"
+        case .localOffer: "have-local-offer"
+        case .localProvisionalAnswer: "have-local-pranswer"
+        case .remoteOffer: "have-remote-offer"
+        case .remoteProvisionalAnswer: "have-remote-pranswer"
+        case .closed: "closed"
+        case .unknown: "unknown"
+        }
+    }
+
+    package static func name(_ state: CommunicationICEConnectionState) -> String {
+        state == .fresh ? "new" : state.rawValue
+    }
+
+    package static func name(_ state: CommunicationConnectionState) -> String {
+        state == .fresh ? "new" : state.rawValue
+    }
+
+    package static func name(_ state: CommunicationICEGatheringState) -> String {
+        state == .fresh ? "new" : state.rawValue
+    }
+
     // MARK: States
 
-    static func signalingState(_ state: String) -> CommunicationSignalingState {
+    package static func signalingState(_ state: String) -> CommunicationSignalingState {
         switch state {
         case "stable": .stable
         case "have-local-offer": .localOffer
@@ -149,7 +205,7 @@ enum W3C {
         }
     }
 
-    static func iceConnectionState(_ state: String) -> CommunicationICEConnectionState {
+    package static func iceConnectionState(_ state: String) -> CommunicationICEConnectionState {
         switch state {
         case "new": .fresh
         case "checking": .checking
@@ -162,7 +218,7 @@ enum W3C {
         }
     }
 
-    static func connectionState(_ state: String) -> CommunicationConnectionState {
+    package static func connectionState(_ state: String) -> CommunicationConnectionState {
         switch state {
         case "new": .fresh
         case "connecting": .connecting
@@ -174,7 +230,7 @@ enum W3C {
         }
     }
 
-    static func iceGatheringState(_ state: String) -> CommunicationICEGatheringState {
+    package static func iceGatheringState(_ state: String) -> CommunicationICEGatheringState {
         switch state {
         case "new": .fresh
         case "gathering": .gathering
@@ -183,7 +239,7 @@ enum W3C {
         }
     }
 
-    static func dataChannelState(_ state: String) -> CommunicationDataChannelState {
+    package static func dataChannelState(_ state: String) -> CommunicationDataChannelState {
         switch state {
         case "connecting": .connecting
         case "open": .open
