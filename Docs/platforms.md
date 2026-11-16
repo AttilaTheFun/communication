@@ -123,8 +123,11 @@ CommunicationCore          the implementation, shared Swift, no #if
    no WebRTC). Eight tests pass on Linux. The host speaks W3C: JSON
    dictionaries, W3C state names, `[UInt8]` bytes, pulled events. A connection
    that's dropped disconnects its host connection.
-3. The Apple adapter, with the core in place of today's backend, keeping its
-   loopback test green.
+3. Done (2026-11-16): the Apple adapter, `LiveKitWebRTCHost`, beside today's
+   backend. The core runs over real WebRTC on macOS: two connections
+   negotiate, open a channel, carry text and bytes both ways, and close.
+   `WebRTCConnector` keeps media (Convo's calls) until the host has track
+   primitives, then shrinks to the adapter.
 4. The web and Android adapters, from Convo's JavaScript and Kotlin, injected
    through Isomer.
 5. The Linux and Windows adapter over the C shim.
