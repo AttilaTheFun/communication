@@ -9,7 +9,7 @@ that is not transport.
 
 ## Layout
 
-`Package.swift`, `Package.resolved`, `README.md`, `AGENTS.md`, `.gitignore`
+`Package.swift`, `Package.resolved`, `README.md`, `AGENTS.md`, `TODO.md`, `.gitignore`
 at the root and nothing else. `Sources/Communication` (the API, no WebRTC
 import), `Sources/CommunicationWebRTC` (the backend), `Tests/`,
 `Examples/` (small executables, not products), `Docs/`, `Tools/`.

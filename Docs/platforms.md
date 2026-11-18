@@ -128,6 +128,8 @@ CommunicationCore          the implementation, shared Swift, no #if
    negotiate, open a channel, carry text and bytes both ways, and close.
    `WebRTCConnector` keeps media (Convo's calls) until the host has track
    primitives, then shrinks to the adapter.
+Steps 4 to 8 are tabled (2026-11-18); `TODO.md` lists them.
+
 4. The web and Android adapters, from Convo's JavaScript and Kotlin, injected
    through Isomer.
 5. The Linux and Windows adapter over the C shim.
