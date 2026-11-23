@@ -116,7 +116,7 @@ CommunicationCore          the implementation, shared Swift, no #if
 
 1. Done (2026-11-11): the settings above. The Apple backend is
    compile-gated (`#if canImport(LiveKitWebRTC)`) and LiveKit's binary is
-   Apple-only, so the package builds on Linux (a Shireworks container with
+   Apple-only, so the package builds on Linux (a container with
    swift:6.4.2-noble).
 2. Done (2026-11-11): `WebRTCHost` and `CommunicationCore` for signaling and
    data channels, with a loopback host in the tests (two peers in one process,

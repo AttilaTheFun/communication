@@ -40,5 +40,5 @@ WebRTC. The plan and its reasons are in `Docs/platforms.md`.
   `ConvoHost` drops its WebRTC calls (Convo's TODO.md).
 - LiveKit's published xcframework again once a release includes
   webrtc-sdk/webrtc#318 (`Docs/README.md`, To do).
-- CI on Shireworks.
-- Public, when Logan says so.
+- CI on GitHub's runners, as a public repository's: Linux builds and tests on
+  every pull request, the Apple ones at release verification.

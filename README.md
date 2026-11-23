@@ -92,3 +92,7 @@ source.position = AVAudio3DPoint(x: 1, y: 0, z: -2)   // from the peer's pose
 
 Each such connection has a WebRTC factory of its own (that is how its playout
 is one peer), so keep a room to a mesh of a handful of peers.
+
+## License
+
+Apache License 2.0 (`LICENSE`).
