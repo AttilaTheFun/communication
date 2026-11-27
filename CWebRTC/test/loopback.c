@@ -138,6 +138,16 @@ static int until(int (*done)(side *, side *), side *a, side *b) {
 static int both_open(side *a, side *b) { return a->open && b->open; }
 static int all_received(side *a, side *b) { return a->got_text && a->got_bytes && b->got_text && b->got_bytes; }
 static int again_received(side *a, side *b) { return a->got_again && b->got_again; }
+// Two threads opening the same label on one peer at once: one may win.
+typedef struct { cw_peer *peer; int result; } racer;
+static void *race_open(void *argument) {
+    racer *r = argument;
+    char error[128];
+    cw_channel_configuration channel = {1, -1, -1, NULL, 0, -1};
+    r->result = cw_peer_open_channel(r->peer, "race", &channel, error, sizeof error);
+    return NULL;
+}
+
 static int b_dup_open(side *a, side *b) { (void)a; return b->dup_open; }
 static int a_dup_closed(side *a, side *b) { (void)b; return a->dup_closed; }
 
@@ -228,6 +238,21 @@ int main(void) {
         return 1;
     }
     printf("a's dup was turned away; b's stays open\n");
+    // Two local opens of "race" at once on a: exactly one gets the label.
+    for (int round = 0; round < 20; round++) {
+        racer first = {a.peer, 1}, second = {a.peer, 1};
+        pthread_t t1, t2;
+        pthread_create(&t1, NULL, race_open, &first);
+        pthread_create(&t2, NULL, race_open, &second);
+        pthread_join(t1, NULL);
+        pthread_join(t2, NULL);
+        if ((first.result == 0) + (second.result == 0) != 1) {
+            fprintf(stderr, "round %d: %d opens of race succeeded\n", round, (first.result == 0) + (second.result == 0));
+            return 1;
+        }
+        if (round == 0) printf("two opens of race at once: one won\n");
+        break;
+    }
     if (cw_peer_send(a.peer, "chat", (const uint8_t *)"a again", 7, 0) != 0 ||
         cw_peer_send(b.peer, "chat", (const uint8_t *)"b again", 7, 0) != 0) {
         fprintf(stderr, "chat stopped working after dup\n");
