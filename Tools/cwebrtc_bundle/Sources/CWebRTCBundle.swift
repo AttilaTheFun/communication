@@ -18,26 +18,49 @@ struct CWebRTCBundle: ParsableCommand {
 enum Platform: String, CaseIterable, ExpressibleByArgument {
     case linuxX64 = "linux-x64"
     case linuxArm64 = "linux-arm64"
+    case androidArm64 = "android-arm64"
+    case androidX64 = "android-x64"
 
+    /// The Swift target triple the variant is for (SE-0482's supportedTriples):
+    /// Android's as swift.org's Swift SDK for Android builds, API 28.
     var triple: String {
         switch self {
         case .linuxX64: "x86_64-unknown-linux-gnu"
         case .linuxArm64: "aarch64-unknown-linux-gnu"
+        case .androidArm64: "aarch64-unknown-linux-android28"
+        case .androidX64: "x86_64-unknown-linux-android28"
         }
     }
 
-    /// The system libraries a program links beside the bundle's: libwebrtc
-    /// carries Chromium's libc++, so only the C library's parts.
+    var isAndroid: Bool { self == .androidArm64 || self == .androidX64 }
+
+    /// clang's target for the shim on Android, the NDK's (Linux: the host's).
+    var clangTarget: String? {
+        switch self {
+        case .linuxX64, .linuxArm64: nil
+        case .androidArm64: "aarch64-linux-android28"
+        case .androidX64: "x86_64-linux-android28"
+        }
+    }
+
+    /// The system libraries a program links beside the bundle's. Linux's
+    /// libwebrtc carries Chromium's libc++, so only the C library's parts;
+    /// Android's is built against the NDK's libc++ (`std::__ndk1`, the one
+    /// Swift's Android runtime uses), shared, and logs to liblog.
     var linkedLibraries: [String] {
         switch self {
         case .linuxX64, .linuxArm64: ["m"]
+        case .androidArm64, .androidX64: ["log", "c++_shared"]
         }
     }
 
-    /// The shim's C sources beside cwebrtc.cc.
+    /// The shim's sources beside cwebrtc.cc: Linux's X11 stubs (C), and
+    /// Android's weak libc++ `__hash_memory` for an NDK older than
+    /// libwebrtc's (C++).
     var extraSources: [String] {
         switch self {
         case .linuxX64, .linuxArm64: ["x11_stubs.c"]
+        case .androidArm64, .androidX64: ["android_stubs.cc"]
         }
     }
 }
@@ -71,6 +94,9 @@ struct Variant: ParsableCommand {
     @Option(help: "The archiver.")
     var ar: String = "llvm-ar"
 
+    @Option(help: "The Android NDK (its root), for an Android platform: the shim is compiled against its sysroot and libc++.")
+    var ndk: String?
+
     func run() throws {
         let fm = FileManager.default
         // Only a pinned download: what's in it is linked into every program
@@ -99,20 +125,42 @@ struct Variant: ParsableCommand {
         let include = release.appendingPathComponent("include")
         let defines = try Self.defines(release.appendingPathComponent("webrtc.ninja"))
         let sources = URL(fileURLWithPath: sources)
+        // The C++ library the shim is compiled against: Linux's libwebrtc
+        // carries Chromium's own libc++ (std::__Cr), whose headers its
+        // release ships; Android's is built against the NDK's (std::__ndk1),
+        // so the shim takes the NDK's sysroot and headers.
+        let target: [String]
+        let cxxLibrary: [String]
+        if let clangTarget = platform.clangTarget {
+            guard let ndk else { throw ValidationError("\(platform.rawValue) needs --ndk <the Android NDK's root>") }
+            let prebuilt = URL(fileURLWithPath: ndk).appendingPathComponent("toolchains/llvm/prebuilt")
+            guard let host = try fm.contentsOfDirectory(atPath: prebuilt.path).sorted().first else {
+                throw ValidationError("no prebuilt toolchain in \(prebuilt.path)")
+            }
+            let sysroot = prebuilt.appendingPathComponent(host).appendingPathComponent("sysroot")
+            target = ["--target=\(clangTarget)", "--sysroot=\(sysroot.path)", "-ffile-prefix-map=\(ndk)=ndk"]
+            cxxLibrary = []
+        } else {
+            target = []
+            cxxLibrary = [
+                "-nostdinc++",
+                "-isystem", include.appendingPathComponent("buildtools/third_party/libc++").path,
+                "-isystem", include.appendingPathComponent("third_party/libc++/src/include").path,
+                "-isystem", include.appendingPathComponent("third_party/libc++abi/src/include").path,
+            ]
+        }
         let objects = work.appendingPathComponent("objects")
         try? fm.removeItem(at: objects)
         try fm.createDirectory(at: objects, withIntermediateDirectories: true)
 
-        // The shim, against Chromium's libc++ (libwebrtc's own), with libwebrtc's defines.
+        // The shim, against libwebrtc's C++ library (above), with libwebrtc's defines.
         let shim = objects.appendingPathComponent("cwebrtc.o")
-        try Shell.run(cxx, [
-            "-std=c++20", "-O2", "-fPIC", "-w", "-nostdinc++",
+        try Shell.run(cxx, target + [
+            "-std=c++20", "-O2", "-fPIC", "-w",
             // Reproducible: the build's paths don't reach the object
             // (Package.swift's checksum is rebuilt and compared).
             "-ffile-prefix-map=\(release.path)=libwebrtc", "-ffile-prefix-map=\(sources.path)=CWebRTC",
-            "-isystem", include.appendingPathComponent("buildtools/third_party/libc++").path,
-            "-isystem", include.appendingPathComponent("third_party/libc++/src/include").path,
-            "-isystem", include.appendingPathComponent("third_party/libc++abi/src/include").path,
+        ] + cxxLibrary + [
             "-I", include.path,
             "-I", include.appendingPathComponent("third_party/abseil-cpp").path,
             "-I", sources.appendingPathComponent("include").path,
@@ -120,8 +168,10 @@ struct Variant: ParsableCommand {
         var added = [shim.path]
         for source in platform.extraSources {
             let object = objects.appendingPathComponent(source + ".o")
-            try Shell.run(cc, ["-O2", "-fPIC", "-ffile-prefix-map=\(sources.path)=CWebRTC",
-                               "-c", sources.appendingPathComponent("src/\(source)").path, "-o", object.path])
+            let cplusplus = source.hasSuffix(".cc")
+            try Shell.run(cplusplus ? cxx : cc, target + (cplusplus ? ["-std=c++20"] : []) + [
+                "-O2", "-fPIC", "-ffile-prefix-map=\(sources.path)=CWebRTC",
+                "-c", sources.appendingPathComponent("src/\(source)").path, "-o", object.path])
             added.append(object.path)
         }
 
