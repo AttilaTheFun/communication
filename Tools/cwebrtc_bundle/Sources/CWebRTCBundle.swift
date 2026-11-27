@@ -173,7 +173,7 @@ struct Variant: ParsableCommand {
 struct Assemble: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Gather variants into the artifact bundle and zip it.")
 
-    @Option(help: "The bundle's version (the release's).")
+    @Option(help: "The bundle's version (the release's), or `auto`: the one Package.swift's bundle URL names, else VERSION's line's first (X.Y.1). It's in info.json, so in the checksum: CI and the release take the one prepare did.")
     var version: String
 
     @Option(help: "Where the zip goes.")
@@ -183,6 +183,7 @@ struct Assemble: ParsableCommand {
     var variants: [String]
 
     func run() throws {
+        let version = try self.version == "auto" ? Self.autoVersion() : self.version
         let fm = FileManager.default
         let zip = URL(fileURLWithPath: out)
         let staging = zip.deletingLastPathComponent().appendingPathComponent("staging")
@@ -450,6 +451,19 @@ enum Notes {
         return try files.filter { $0.hasSuffix(".md") && $0 != "changes/README.md" }
             .map { try String(contentsOfFile: $0, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) }
             .joined(separator: "\n")
+    }
+}
+
+extension Assemble {
+    static func autoVersion() throws -> String {
+        if let named = try ManifestBundle.read("Package.swift"),
+           let range = named.url.range(of: #"/v([0-9]+\.[0-9]+\.[0-9]+)/"#, options: .regularExpression) {
+            return String(named.url[range].dropFirst(2).dropLast())
+        }
+        let line = try String(contentsOfFile: "VERSION", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = line.split(separator: ".")
+        guard parts.count == 3 else { throw ValidationError("VERSION is \(line), not X.Y.0") }
+        return "\(parts[0]).\(parts[1]).1"
     }
 }
 
