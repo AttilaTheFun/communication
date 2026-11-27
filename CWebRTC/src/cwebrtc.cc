@@ -427,8 +427,9 @@ void cw_peer_add_candidate(cw_peer *peer, const char *candidate, const char *sdp
     auto connection = connection_of(peer);
     if (!connection) return result(webrtc::RTCError(webrtc::RTCErrorType::INVALID_STATE, "Closed."));
     webrtc::SdpParseError error;
-    auto parsed = webrtc::CreateIceCandidate(sdp_mid != nullptr ? sdp_mid : "", sdp_mline_index < 0 ? 0 : sdp_mline_index,
-                                             candidate != nullptr ? candidate : "", &error);
+    std::unique_ptr<webrtc::IceCandidate> parsed(webrtc::CreateIceCandidate(
+        sdp_mid != nullptr ? sdp_mid : "", sdp_mline_index < 0 ? 0 : sdp_mline_index,
+        candidate != nullptr ? candidate : "", &error));
     if (!parsed) {
         return result(webrtc::RTCError(webrtc::RTCErrorType::INVALID_PARAMETER, "Invalid candidate: " + error.description));
     }
