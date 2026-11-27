@@ -12,9 +12,9 @@
 // for that call.
 //
 // Lifetimes: a peer's on_event and context are used until cw_peer_release
-// returns, and not after. Every cw_result_fn is called exactly once, even
-// when the peer is closed or released first (with an error then), so a
-// context it owns can be freed there.
+// returns, and not after. Every cw_result_fn is called exactly once:
+// cw_peer_close and cw_peer_release end what libwebrtc hasn't, with an
+// error, so a context it owns can be freed there.
 #ifndef CWEBRTC_H
 #define CWEBRTC_H
 
@@ -103,6 +103,9 @@ void cw_peer_restart_ice(cw_peer *peer);
 
 /// Opens a data channel: 0, or -1 with the reason in error. It's reported
 /// with CW_EVENT_CHANNEL_STATE as it opens, as channels the remote opens are.
+/// Channels are named by label: a new one (ours or the remote's) with a
+/// label in use replaces the old, which is closed and reported "closed"
+/// first.
 int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_configuration *configuration,
                              char *error, size_t error_capacity);
 /// Sends on an open channel: 0, or -1 when it can't.

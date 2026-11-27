@@ -121,7 +121,7 @@ public final class NativeWebRTCHost: WebRTCHost, @unchecked Sendable {
 
     public func nextEvent(connection id: Int32) async throws -> WebRTCHostEvent {
         guard let connection = try? connection(id) else { return WebRTCHostEvent(.closed) }
-        return await connection.events.next()
+        return try await connection.events.next()
     }
 
     public func disconnect(connection id: Int32) async {
@@ -270,32 +270,36 @@ private final class EventQueue: @unchecked Sendable {
     // `@unchecked`: everything below is guarded by `lock`.
     private let lock = NSLock()
     private var queue: [WebRTCHostEvent] = []
-    private var waiting: [UUID: CheckedContinuation<WebRTCHostEvent, Never>] = [:]
+    private var waiting: [UUID: CheckedContinuation<WebRTCHostEvent?, Never>] = [:]
     private var order: [UUID] = []
     private var closed = false
 
     /// The next event, or `.closed` once the connection is gone. A pull
-    /// that's cancelled answers `.closed` for that call alone.
-    func next() async -> WebRTCHostEvent {
+    /// that's cancelled throws `CancellationError`, so a caller doesn't
+    /// take it for the connection closing.
+    func next() async throws -> WebRTCHostEvent {
         let id = UUID()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                let event: WebRTCHostEvent? = lock.withLock {
-                    if !queue.isEmpty { return queue.removeFirst() }
-                    if closed || Task.isCancelled { return WebRTCHostEvent(.closed) }
+        let event: WebRTCHostEvent? = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<WebRTCHostEvent?, Never>) in
+                let ready: WebRTCHostEvent?? = lock.withLock {
+                    if !queue.isEmpty { return .some(queue.removeFirst()) }
+                    if closed { return .some(WebRTCHostEvent(.closed)) }
+                    if Task.isCancelled { return .some(nil) }
                     waiting[id] = continuation
                     order.append(id)
                     return nil
                 }
-                if let event { continuation.resume(returning: event) }
+                if let ready { continuation.resume(returning: ready) }
             }
         } onCancel: {
-            let waiter: CheckedContinuation<WebRTCHostEvent, Never>? = lock.withLock {
+            let waiter: CheckedContinuation<WebRTCHostEvent?, Never>? = lock.withLock {
                 order.removeAll { $0 == id }
                 return waiting.removeValue(forKey: id)
             }
-            waiter?.resume(returning: WebRTCHostEvent(.closed))
+            waiter?.resume(returning: nil)
         }
+        guard let event else { throw CancellationError() }
+        return event
     }
 
     func post(_ event: WebRTCHostEvent) {
@@ -303,7 +307,7 @@ private final class EventQueue: @unchecked Sendable {
             end()
             return
         }
-        let waiter: CheckedContinuation<WebRTCHostEvent, Never>? = lock.withLock {
+        let waiter: CheckedContinuation<WebRTCHostEvent?, Never>? = lock.withLock {
             guard !closed else { return nil }
             guard let first = order.first else {
                 queue.append(event)
@@ -317,7 +321,7 @@ private final class EventQueue: @unchecked Sendable {
 
     /// No more events: every pull answers `.closed`.
     func end() {
-        let waiters: [CheckedContinuation<WebRTCHostEvent, Never>] = lock.withLock {
+        let waiters: [CheckedContinuation<WebRTCHostEvent?, Never>] = lock.withLock {
             closed = true
             defer {
                 waiting.removeAll()
