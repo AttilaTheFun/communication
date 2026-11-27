@@ -113,7 +113,9 @@ NDK's x86_64 `ld.lld`; a toolset naming the builder's own (`"linker": {
 "path": "/usr/bin/ld.lld" }` and `-fuse-ld=/usr/bin/ld.lld`) does instead.
 The bundle's Android variants are for `cwebrtc-bundle` next.
 
-Windows (a `.lib`, COFF) is still to prove the same way.
+Windows doesn't link as Linux and Android do: LiveKit's libwebrtc there is
+built with the static C runtime, and Swift's is the dynamic one (Open
+questions, below).
 
 ### Web: wasm imports and the package's JavaScript
 
@@ -192,9 +194,28 @@ backends. Then `WebRTCConnector` shrinks to `LiveKitWebRTCHost`.
   downloads once per checksum. Trimming what the shim doesn't use (desktop
   capture, PipeWire, H.265) means building libwebrtc ourselves rather than
   taking LiveKit's release. That's for later, if the size matters.
-- **Windows' C runtime.** LiveKit's Windows libraries are built for MSVC's C
-  runtime. Swift on Windows uses the same, but the flavour (`/MT` or `/MD`)
-  has to match. To check when proving Windows.
+- **Windows' C runtime (checked 2026-11-27: it doesn't match).** LiveKit's
+  Windows libwebrtc (`webrtc-83af826`, win-x64: clang-cl, MSVC's STL,
+  `use_custom_libcxx = false`) is built with the static C runtime: its
+  objects carry `/DEFAULTLIB:libcmt.lib`, `/DEFAULTLIB:libcpmt.lib` and
+  `/FAILIFMISMATCH:"RuntimeLibrary=MT_StaticRelease"`. Swift on Windows is
+  built with the dynamic one (`/MD`), so MSVC's linker refuses the two in
+  one program (LNK2038). The ways on:
+  - **Build libwebrtc for Windows ourselves, with `/MD`** (WebRTC's GN
+    builds the static CRT unless told otherwise, so a small patch to its
+    `build/config/win` CRT config), from the same tree LiveKit builds, in a
+    workflow of our own. It's the one that keeps Windows like Linux: a
+    static library in the bundle and nothing else for an app. The cost is
+    a WebRTC checkout and build (tens of GB, hours) per libwebrtc release, on
+    a runner big enough for it.
+  - **Ship CWebRTC as a DLL** (libwebrtc and the shim with their static CRT
+    inside it, a C interface out, and nothing of the CRT crossing it). This
+    works with LiveKit's library as it is, but SwiftPM can't carry a DLL in
+    an artifact bundle yet (SE-0482 is static only), so an app would have to
+    put `cwebrtc.dll` beside itself, which isn't out of the box.
+  - **A Swift program built with the static CRT** (`-libc MT`) would link,
+    but Swift's own runtime on Windows is `/MD`, so that's not something a
+    package can ask of its users.
 - **Wasm inside native hosts.** A wasm build running in a native host's JS
   engine (Isomer 0.52's JavaScriptSandbox on Android) has no
   RTCPeerConnection. An app there uses the native backend instead.
