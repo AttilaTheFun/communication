@@ -327,7 +327,7 @@ struct Pin: ParsableCommand {
             """
         }
         text = try Self.fill(text, "dependency", """
-                        .target(name: "CWebRTC", condition: .when(platforms: [.linux])),
+                        .target(name: "CWebRTC", condition: .when(platforms: [.linux, .android])),
         """)
         text = try Self.fill(text, "target", target)
         try text.write(toFile: manifest, atomically: true, encoding: .utf8)
