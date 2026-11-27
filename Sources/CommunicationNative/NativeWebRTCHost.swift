@@ -251,10 +251,16 @@ private final class NativeConnection: @unchecked Sendable {
         if let error {
             box.continuation.resume(throwing: CommunicationError(code: .webRTCOperationFailed, message: String(cString: error)))
         } else if let type, let sdp {
-            box.continuation.resume(returning: W3C.json(W3C.SessionDescription(type: String(cString: type), sdp: String(cString: sdp))))
+            box.continuation.resume(returning: W3C.json(Description(type: String(cString: type), sdp: String(cString: sdp))))
         } else {
             box.continuation.resume(returning: "")
         }
+    }
+
+    /// An `RTCSessionDescriptionInit`, as `W3C.SessionDescription` encodes it.
+    private struct Description: Encodable {
+        let type: String
+        let sdp: String
     }
 
     private final class ResultBox {
