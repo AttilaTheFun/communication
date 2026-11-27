@@ -53,8 +53,10 @@ JavaScriptEventLoop.installGlobalExecutor()
     print("web loopback: a second chat is refused")
     // Both open "dup" at once: each side's copy from the other collides
     // with its own and is closed; "chat" goes on.
+    // (Or the caller's arrives first and the callee's own is refused: which
+    // is timing, and either keeps one "dup" per label.)
     try await caller.openDataChannel(label: "dup")
-    try await callee.openDataChannel(label: "dup")
+    if (try? await callee.openDataChannel(label: "dup")) == nil { print("web loopback: the callee's dup was refused") }
     try await Task.sleep(nanoseconds: 1_000_000_000)
     try await caller.send(text: "after dup")
     try await expect(calleeEvents, "chat carries text after dup") {

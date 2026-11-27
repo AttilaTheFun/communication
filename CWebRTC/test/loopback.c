@@ -189,12 +189,15 @@ int main(void) {
         return 1;
     }
     printf("b: second chat refused: %s\n", error);
-    // Both open "dup" at once: each side's copy from the other collides
-    // with its own, and is closed.
-    if (cw_peer_open_channel(a.peer, "dup", &channel, error, sizeof error) != 0 ||
-        cw_peer_open_channel(b.peer, "dup", &channel, error, sizeof error) != 0) {
-        fprintf(stderr, "dup failed: %s\n", error);
+    // Both open "dup" at once. Either each side's copy from the other
+    // collides with its own and is closed, or a's arrives first and b's own
+    // is refused: which is timing, and either keeps one "dup" per label.
+    if (cw_peer_open_channel(a.peer, "dup", &channel, error, sizeof error) != 0) {
+        fprintf(stderr, "a's dup failed: %s\n", error);
         return 1;
+    }
+    if (cw_peer_open_channel(b.peer, "dup", &channel, error, sizeof error) != 0) {
+        printf("b: dup refused (a's arrived first): %s\n", error);
     }
     struct timespec settle = {1, 0};
     nanosleep(&settle, NULL);
