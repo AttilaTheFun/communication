@@ -7,9 +7,15 @@
 // of the W3C dictionaries.
 //
 // Threads: every callback runs on libwebrtc's signaling thread. A callback
-// must not call back into this interface, or free what its context points
+// must not call any cw_peer_* function, or free what its context points
 // to; copy what it gives and return. Strings handed to a callback live only
 // for that call.
+//
+// That's not only good manners: on_event runs while the peer's own lock (a
+// std::mutex, not recursive) is held, so a cw_peer_* call from inside it
+// (sending as a channel opens, say) deadlocks its thread. Hand the work to
+// another thread instead, as Communication's NativeWebRTCHost queues its
+// events for Swift tasks.
 //
 // Lifetimes: a peer's on_event and context are used until cw_peer_release
 // returns, and not after. Every cw_result_fn is called exactly once:
@@ -103,9 +109,11 @@ void cw_peer_restart_ice(cw_peer *peer);
 
 /// Opens a data channel: 0, or -1 with the reason in error. It's reported
 /// with CW_EVENT_CHANNEL_STATE as it opens, as channels the remote opens are.
-/// Channels are named by label: a new one (ours or the remote's) with a
-/// label in use replaces the old, which is closed and reported "closed"
-/// first.
+/// Channels are named by label, one at a time: opening one with a label
+/// that's open (in any state but closed) fails, and a remote channel with
+/// such a label is closed at once and not reported, so a peer can't close
+/// or take over the app's channels. A label is free again once its channel
+/// has closed.
 int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_configuration *configuration,
                              char *error, size_t error_capacity);
 /// Sends on an open channel: 0, or -1 when it can't.

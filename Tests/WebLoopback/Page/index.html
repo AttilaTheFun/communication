@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Communication web loopback</title>
+<!-- The test's page: PackageToJS's loader, with communication_webrtc.js's
+     imports added to the module's. -->
+<script type="module">
+  import { instantiate } from "./Package/instantiate.js";
+  import { defaultBrowserSetup } from "./Package/platforms/browser.js";
+  import { CommunicationWebRTC } from "./communication_webrtc.js";
+
+  const webrtc = new CommunicationWebRTC();
+  try {
+    const options = await defaultBrowserSetup({ module: fetch(new URL("./Package/WebLoopback.wasm", import.meta.url)) });
+    await instantiate({
+      ...options,
+      addToCoreImports(imports, context) {
+        imports.communication_webrtc = webrtc.imports;
+        webrtc.attach(() => context.getInstance()?.exports);
+      },
+    });
+  } catch (error) {
+    window.webLoopback = "failed to start: " + error;
+  }
+</script>

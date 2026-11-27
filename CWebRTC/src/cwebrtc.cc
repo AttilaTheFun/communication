@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -185,7 +186,9 @@ struct cw_peer : public webrtc::PeerConnectionObserver {
     void *context = nullptr;
     bool closed = false;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> connection;
-    std::map<std::string, std::unique_ptr<ChannelObserver>> channels;
+    // Shared: an adopt in progress holds its observer until it has
+    // registered it, even if another adopt replaces it meanwhile.
+    std::map<std::string, std::shared_ptr<ChannelObserver>> channels;
     // Operations started and maybe not yet ended, for cw_peer_release.
     // Held strongly: an observer libwebrtc drops unended must still end.
     std::vector<std::shared_ptr<Pending>> pending;
@@ -199,13 +202,25 @@ struct cw_peer : public webrtc::PeerConnectionObserver {
         on_event(context, kind, channel.c_str(), text.c_str(), data, length);
     }
 
-    void adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
+    // Labels a local open has claimed but not yet adopted (the channel is
+    // made on the signaling thread, after cw_peer_open_channel checked).
+    std::set<std::string> reserved;
+
+    // Whether a channel named label is open (any state but closed) or
+    // claimed by a local open in progress. With lock held.
+    bool label_taken_locked(const std::string &label);
+    // Claims label for a local open: false when it's taken.
+    bool reserve(const std::string &label);
+    void unreserve(const std::string &label);
+    // Takes a channel: false (and the channel closed) for a remote one whose
+    // label is in use.
+    bool adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel, bool remote);
 
     // webrtc::PeerConnectionObserver
     void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState state) override {
         emit(CW_EVENT_SIGNALING_STATE, "", signaling_name(state));
     }
-    void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override { adopt(channel); }
+    void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override { adopt(channel, true); }
     void OnNegotiationNeededEvent(uint32_t) override { emit(CW_EVENT_NEGOTIATION_NEEDED); }
     void OnStandardizedIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState state) override {
         emit(CW_EVENT_ICE_CONNECTION_STATE, "", ice_connection_name(state));
@@ -223,17 +238,40 @@ struct cw_peer : public webrtc::PeerConnectionObserver {
 
 namespace {
 
+// A channel's observer. It unregisters itself when it goes, so libwebrtc
+// never calls a freed one, however adopts interleave; once retired (its
+// channel replaced) it reports nothing more; and it reports each state once,
+// so a state seen by adopt and by OnStateChange isn't reported twice.
 class ChannelObserver : public webrtc::DataChannelObserver {
   public:
     ChannelObserver(cw_peer *peer, webrtc::scoped_refptr<webrtc::DataChannelInterface> channel)
         : peer_(peer), channel_(std::move(channel)), label_(channel_->label()) {}
 
+    ~ChannelObserver() override { channel_->UnregisterObserver(); }
+
     // A reference of the caller's own, so the channel outlives a close or a
     // replacement on another thread.
     webrtc::scoped_refptr<webrtc::DataChannelInterface> channel() const { return channel_; }
 
-    void OnStateChange() override { peer_->emit(CW_EVENT_CHANNEL_STATE, label_, channel_name(channel_->state())); }
+    void retire() { current_ = false; }
+
+    // The channel's state, if it's changed since the last report. Read and
+    // reported under one lock, so two reporters (adopt and OnStateChange)
+    // can't report out of order ("open" before "connecting"): the channel's
+    // states only go forward, and so do the reports. Lock order: this, then
+    // the peer's (emit's).
+    void report_state() {
+        if (!current_) return;
+        std::lock_guard<std::mutex> guard(reported_lock_);
+        const char *state = channel_name(channel_->state());
+        if (state == reported_) return;
+        reported_ = state;
+        peer_->emit(CW_EVENT_CHANNEL_STATE, label_, state);
+    }
+
+    void OnStateChange() override { report_state(); }
     void OnMessage(const webrtc::DataBuffer &buffer) override {
+        if (!current_) return;
         const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.data.data());
         if (buffer.binary) {
             peer_->emit(CW_EVENT_DATA_MESSAGE, label_, "", bytes, buffer.data.size());
@@ -249,6 +287,10 @@ class ChannelObserver : public webrtc::DataChannelObserver {
     cw_peer *peer_;
     webrtc::scoped_refptr<webrtc::DataChannelInterface> channel_;
     std::string label_;
+    std::atomic<bool> current_{true};
+    std::mutex reported_lock_;
+    // channel_name's strings are static, so they compare by pointer.
+    const char *reported_ = nullptr;
 };
 
 // The end of an operation, to its cw_result_fn exactly once.
@@ -351,30 +393,69 @@ void finish_pending(cw_peer *peer, const char *error) {
 
 }  // namespace
 
-void cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
-    auto observer = std::make_unique<ChannelObserver>(this, channel);
-    channel->RegisterObserver(observer.get());
+bool cw_peer::label_taken_locked(const std::string &label) {
+    if (reserved.count(label) != 0) return true;
+    auto found = channels.find(label);
+    return found != channels.end() && found->second->channel()->state() != webrtc::DataChannelInterface::kClosed;
+}
+
+bool cw_peer::reserve(const std::string &label) {
+    std::lock_guard<std::mutex> guard(lock);
+    if (label_taken_locked(label)) return false;
+    reserved.insert(label);
+    return true;
+}
+
+void cw_peer::unreserve(const std::string &label) {
+    std::lock_guard<std::mutex> guard(lock);
+    reserved.erase(label);
+}
+
+// Channels are named by label (as WebRTCHost names them), one at a time: a
+// local open claims its label before the channel is made (cw_peer_open_channel),
+// and fails when it's taken; a remote channel whose label is open or
+// claimed is closed here, unannounced, so a peer can't take over or close
+// the app's channels by reusing their labels. The check and the taking of
+// the slot happen under one hold of the lock, so nothing can come between
+// them. A label is free again once its channel has closed; whatever a new
+// channel replaces is closed, and its observer unregistered before it goes,
+// so libwebrtc never calls a freed one.
+bool cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel, bool remote) {
     std::string label = channel->label();
-    std::unique_ptr<ChannelObserver> replaced;
+    auto observer = std::make_shared<ChannelObserver>(this, channel);
+    std::shared_ptr<ChannelObserver> replaced;
+    bool turned_away = false;
     {
         std::lock_guard<std::mutex> guard(lock);
-        auto &slot = channels[label];
-        replaced = std::move(slot);
-        slot = std::move(observer);
+        if (remote && label_taken_locked(label)) {
+            turned_away = true;
+        } else {
+            if (!remote) reserved.erase(label);
+            auto &slot = channels[label];
+            replaced = std::move(slot);
+            slot = observer;
+        }
     }
-    // Channels are named by label here (as WebRTCHost names them), so a
-    // second channel with a label in use (the remote's, or ours) replaces
-    // the first: it's closed, and its observer unregistered before it goes,
-    // so libwebrtc never calls a freed one.
-    // Its close is reported, then the new channel's state, so a remote
-    // reusing a local channel's label can't close it unseen.
+    if (turned_away) {
+        channel->Close();
+        return false;
+    }
     if (replaced) {
+        replaced->retire();
         auto old = replaced->channel();
-        old->UnregisterObserver();
-        old->Close();
-        emit(CW_EVENT_CHANNEL_STATE, label, "closed");
+        if (old->state() != webrtc::DataChannelInterface::kClosed) old->Close();
     }
-    emit(CW_EVENT_CHANNEL_STATE, label, channel_name(channel->state()));
+    // The state first, then the observer, which libwebrtc may hand what it
+    // buffered (messages) at once, then the state again. Registered outside the lock (delivering
+    // emits, which takes it); `observer` keeps it alive until then even if
+    // another adopt has replaced it, and its destructor unregisters it.
+    observer->report_state();
+    channel->RegisterObserver(observer.get());
+    // And again: a channel that changed state before it had an observer (a
+    // negotiated one, or one on a connected transport, can open in that gap)
+    // still reports it. The dedupe keeps this from reporting twice.
+    observer->report_state();
+    return true;
 }
 
 extern "C" {
@@ -505,6 +586,13 @@ int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_
         copy_error("Closed.", error, error_capacity);
         return -1;
     }
+    std::string name = label != nullptr ? label : "";
+    // Claimed now, under the lock, so a remote channel with the label that
+    // arrives before this one is made is turned away.
+    if (!peer->reserve(name)) {
+        copy_error("A data channel named " + name + " is open.", error, error_capacity);
+        return -1;
+    }
     webrtc::DataChannelInit init;
     if (configuration != nullptr) {
         init.ordered = configuration->ordered != 0;
@@ -514,12 +602,13 @@ int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_
         init.negotiated = configuration->negotiated != 0;
         if (configuration->id >= 0) init.id = configuration->id;
     }
-    auto made = connection->CreateDataChannelOrError(label != nullptr ? label : "", &init);
+    auto made = connection->CreateDataChannelOrError(name, &init);
     if (!made.ok()) {
+        peer->unreserve(name);
         copy_error(made.error().message(), error, error_capacity);
         return -1;
     }
-    peer->adopt(made.MoveValue());
+    peer->adopt(made.MoveValue(), false);
     return 0;
 }
 
@@ -561,13 +650,14 @@ void cw_peer_release(cw_peer *peer) {
     }
     cw_peer_close(peer);
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> connection;
-    std::map<std::string, std::unique_ptr<ChannelObserver>> channels;
+    std::map<std::string, std::shared_ptr<ChannelObserver>> channels;
     {
         std::lock_guard<std::mutex> guard(peer->lock);
         connection = std::move(peer->connection);
         channels = std::move(peer->channels);
     }
-    for (auto &entry : channels) entry.second->channel()->UnregisterObserver();
+    // Each observer unregisters itself as it goes (channels.clear() below).
+    for (auto &entry : channels) entry.second->retire();
     // The connection goes before its observer, peer, does.
     connection = nullptr;
     channels.clear();

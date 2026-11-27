@@ -90,16 +90,45 @@ in the data path.
 - the executable needs only libc, libm and libgcc_s beyond Swift's runtime,
   and Chromium's libc++ sits beside Swift's libstdc++ with no clash.
 
-Windows (a `.lib`, COFF) and Android (through a Swift SDK for Android) are
-still to prove the same way.
+**Proved on Android arm64** (2026-11-27: swift.org's 6.4.2 Swift SDK for
+Android with NDK r27c, LiveKit `webrtc-83af826`'s `android-arm64`, run on
+Waydroid, API 33):
+- LiveKit's Android libwebrtc is built against the NDK's own libc++
+  (`use_custom_libcxx = false`, `std::__ndk1`), the one Swift's Android
+  runtime uses too. So the shim is compiled with the NDK's sysroot and
+  headers (`--target=aarch64-linux-android28 --sysroot=<ndk>/…/sysroot`),
+  and the variant's module map links `log` and `c++_shared`;
+- it was built with NDK r30, whose libc++ has `std::__hash_memory`, which
+  r27's lacks, so the variant carries `android_stubs.cc`'s weak one; no X11
+  stubs;
+- the C loopback (every case, label policy included) passes as an Android
+  executable;
+- `swift build --swift-sdk aarch64-unknown-linux-android28 --build-tests`
+  over the variant, then `NativeHostTests` (over real WebRTC) and the core's
+  8 tests (`--testing-library swift-testing`) pass on the device, with
+  Swift's Android runtime and `libc++_shared.so` beside them.
+
+On an arm64 Linux builder without Rosetta, the SDK's toolset reaches for the
+NDK's x86_64 `ld.lld`; a toolset naming the builder's own (`"linker": {
+"path": "/usr/bin/ld.lld" }` and `-fuse-ld=/usr/bin/ld.lld`) does instead.
+The bundle's Android variants are for `cwebrtc-bundle` next.
+
+Windows (a `.lib`, COFF) is still to prove the same way.
 
 ### Web: wasm imports and the package's JavaScript
 
-- **`CommunicationWeb`:** Swift over a handful of wasm imports in its own
-  module (`communication_webrtc`): create, offer and answer, descriptions,
-  candidates, channels, send, and a callback export the JavaScript calls with
-  each event. Events queue in Swift and are pulled through
-  `nextEvent(connection:)`, as everywhere else.
+- **`CommunicationWeb`:** Swift over a handful of wasm imports in their own
+  module (`communication_webrtc`), declared in a plain C target
+  (`CCommunicationWeb`, `import_module`/`import_name` attributes), so no
+  Swift experimental feature or flag is needed: create, offer and answer,
+  descriptions, candidates, channels, send and close. The C target also
+  exports what the JavaScript calls back with (`communication_webrtc_event`,
+  `_result`, and `_alloc`/`_free` for what it hands over). Events queue in
+  Swift and are pulled through `nextEvent(connection:)`, as everywhere else.
+- **The page's executor:** results and events arrive as calls into the
+  module's exports, which resume Swift tasks, so the page must run Swift's
+  concurrency on the browser's event loop, as Isomer and JavaScriptKit's
+  `JavaScriptEventLoop` do.
 - **`communication_webrtc.js`:** shipped in the package. It implements the
   imports over the browser's `RTCPeerConnection` and `RTCDataChannel`, and
   starts as P2PRC's `index.html` WebRTC code. It's plain ES, with no
@@ -146,7 +175,12 @@ backends. Then `WebRTCConnector` shrinks to `LiveKitWebRTCHost`.
    carry text and bytes both ways, and close; so do the core's 8 tests.
 6. The bundle built in CI for every native triple, released, and named in
    `Package.swift` by URL and checksum. Then Windows, then Android.
-7. `CommunicationWeb` and its JavaScript, tested in a headless browser.
+7. Done (2026-11-27): `CommunicationWeb` (`WebWebRTCHost`, over the
+   `communication_webrtc` imports declared in `CCommunicationWeb`) and
+   `Web/communication_webrtc.js`. Its test (`Tests/WebLoopback`, a package of
+   its own over JavaScriptKit) passes in headless Chromium: two connections
+   in one page negotiate, open a channel, carry text and bytes both ways,
+   and close.
 8. P2PRC moves onto Communication on the web and Android, and its own WebRTC
    glue goes.
 9. Media.

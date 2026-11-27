@@ -42,9 +42,11 @@ ICE candidates reach the other side.
 `Communication` builds everywhere. `CommunicationWebRTC` covers iOS 16+, macOS
 13+ and visionOS 26+ (device and simulator; LiveKit's visionOS slices are
 built for 26.0); there is no Metal video view on visionOS.
-Linux, Windows and Android are coming over the same shared core, through
-LiveKit's prebuilt libwebrtc, and the web through the browser's own
-WebRTC, with no other dependency (`Docs/platforms.md`).
+The web has `CommunicationWeb` over the browser's own WebRTC, with no
+dependency: pass `Web/communication_webrtc.js`'s imports to your wasm loader
+(the file says how), and run Swift's concurrency on the browser's event
+loop. Linux, Windows and Android are coming over the same shared core,
+through LiveKit's prebuilt libwebrtc (`Docs/platforms.md`).
 
 [livekit]: https://github.com/livekit/webrtc-xcframework
 
