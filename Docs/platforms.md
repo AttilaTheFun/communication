@@ -111,7 +111,14 @@ Waydroid, API 33):
 On an arm64 Linux builder without Rosetta, the SDK's toolset reaches for the
 NDK's x86_64 `ld.lld`; a toolset naming the builder's own (`"linker": {
 "path": "/usr/bin/ld.lld" }` and `-fuse-ld=/usr/bin/ld.lld`) does instead.
-The bundle's Android variants are for `cwebrtc-bundle` next.
+The bundle carries Android's variants (`android-arm64`, `android-x64`,
+Swift's triples at API 28) since 0.2.1: `cwebrtc-bundle variant --ndk
+<NDK r27c>` compiles the shim against the NDK's sysroot and libc++. CI builds
+them and links the C loopback as Android executables; the loopback runs on a
+device by hand (2026-11-27: every case passed on Waydroid arm64, API 33, with
+`libc++_shared.so` beside it). An app links the variant's `log` and
+`c++_shared` and ships `libc++_shared.so`, as Swift's Android runtime already
+asks.
 
 Windows doesn't link as Linux and Android do: LiveKit's libwebrtc there is
 built with the static C runtime, and Swift's is the dynamic one (Open
