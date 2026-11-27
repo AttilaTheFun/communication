@@ -73,10 +73,16 @@ let package = Package(
                 "Communication",
                 "CommunicationCore",
                 // cwebrtc-bundle: dependency
+                .target(name: "CWebRTC", condition: .when(platforms: [.linux])),
                 // cwebrtc-bundle: end
             ]
         ),
         // cwebrtc-bundle: target
+        .binaryTarget(
+            name: "CWebRTC",
+            url: "https://github.com/AttilaTheFun/communication/releases/download/v0.1.1/CWebRTC.artifactbundle.zip",
+            checksum: "8a91867f631cd73c383db362bf249bc9afb9900bb1f7c15d18916a1f5e29bc5f"
+        ),
         // cwebrtc-bundle: end
         .testTarget(
             name: "CommunicationNativeTests",
