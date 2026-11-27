@@ -24,6 +24,8 @@ struct side {
     int got_again;
     int dup_closed;
     int dup_open;
+    int dup_opens;
+    int chat_opens;
 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -64,9 +66,13 @@ static void on_event(void *context, int32_t kind, const char *channel, const cha
         printf("%s: channel %s %s\n", s->name, channel, text);
         if (strcmp(channel, "dup") == 0) {
             if (strcmp(text, "closed") == 0) s->dup_closed = 1;
-            if (strcmp(text, "open") == 0) s->dup_open = 1;
+            if (strcmp(text, "open") == 0) {
+                s->dup_open = 1;
+                s->dup_opens++;
+            }
         } else if (strcmp(text, "open") == 0) {
             s->open = 1;
+            if (strcmp(channel, "chat") == 0) s->chat_opens++;
         }
         break;
     case CW_EVENT_CONNECTION_STATE:
@@ -237,6 +243,16 @@ int main(void) {
         fprintf(stderr, "b's own dup didn't stay open\n");
         return 1;
     }
+    // b's negotiated dup can be open by the time it's adopted: "open" is
+    // still reported, and once. So is each side's first "chat".
+    pthread_mutex_lock(&lock);
+    int opens_ok = b.dup_opens == 1 && a.chat_opens == 1;
+    pthread_mutex_unlock(&lock);
+    if (!opens_ok) {
+        fprintf(stderr, "open reported %d times for b's dup, %d for a's chat\n", b.dup_opens, a.chat_opens);
+        return 1;
+    }
+    printf("each open reported once\n");
     printf("a's dup was turned away; b's stays open\n");
     // Two local opens of "race" at once on a: exactly one gets the label.
     for (int round = 0; round < 20; round++) {

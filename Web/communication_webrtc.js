@@ -42,10 +42,13 @@ export class CommunicationWebRTC {
     // connection) gives the import's failure value, or a failed result for
     // its token, rather than unwinding into the module and stranding a
     // continuation.
+    // A trap (WebAssembly.RuntimeError) goes on up: the module is broken,
+    // and nothing more is asked of it.
     const guarded = (failure, body) => (...args) => {
       try {
         return body(...args.map((a) => (typeof a === "number" ? a >>> 0 : a)));
       } catch (error) {
+        if (error instanceof WebAssembly.RuntimeError) throw error;
         console.error("communication_webrtc:", error);
         return failure(...args);
       }
@@ -100,13 +103,18 @@ export class CommunicationWebRTC {
 
   // Runs call with each of buffers written into the module's memory, and
   // frees what was written, whatever happens.
+  // After a trap the module is left alone: no free on it.
   withWritten(buffers, call) {
     const written = [];
+    let trapped = false;
     try {
       for (const buffer of buffers) written.push(this.write(buffer));
       call(written);
+    } catch (error) {
+      trapped = error instanceof WebAssembly.RuntimeError;
+      throw error;
     } finally {
-      for (const [pointer] of written) this.exports.communication_webrtc_free(pointer);
+      if (!trapped) for (const [pointer] of written) this.exports.communication_webrtc_free(pointer);
     }
   }
 
@@ -140,7 +148,8 @@ export class CommunicationWebRTC {
   resultSafely(token, ok, text) {
     try {
       this.result(token, ok, text);
-    } catch {
+    } catch (error) {
+      if (error instanceof WebAssembly.RuntimeError) throw error;
       try {
         this.exports.communication_webrtc_result(token, 0, 0, 0);
       } catch (error) {
@@ -149,6 +158,8 @@ export class CommunicationWebRTC {
     }
   }
 
+  // A trap rethrown from resultSafely ends as an unhandled rejection here:
+  // the module is dead by then, so there's no one left to tell.
   async settle(token, work) {
     let outcome;
     try {
