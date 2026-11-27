@@ -10,5 +10,5 @@ cd Tests/WebLoopback
 swift package --swift-sdk swift-6.4.2-RELEASE_wasm js --use-cdn --product WebLoopback
 ln -sfn ../.build/plugins/PackageToJS/outputs/Package Page/Package
 cp ../../Web/communication_webrtc.js Page/
-(cd Page && npm install && npx playwright install --with-deps chromium && node run.mjs)
+(cd Page && npm ci && npx playwright install --with-deps chromium && node run.mjs)
 ```
