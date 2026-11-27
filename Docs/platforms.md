@@ -95,11 +95,18 @@ still to prove the same way.
 
 ### Web: wasm imports and the package's JavaScript
 
-- **`CommunicationWeb`:** Swift over a handful of wasm imports in its own
-  module (`communication_webrtc`): create, offer and answer, descriptions,
-  candidates, channels, send, and a callback export the JavaScript calls with
-  each event. Events queue in Swift and are pulled through
-  `nextEvent(connection:)`, as everywhere else.
+- **`CommunicationWeb`:** Swift over a handful of wasm imports in their own
+  module (`communication_webrtc`), declared in a plain C target
+  (`CCommunicationWeb`, `import_module`/`import_name` attributes), so no
+  Swift experimental feature or flag is needed: create, offer and answer,
+  descriptions, candidates, channels, send and close. The C target also
+  exports what the JavaScript calls back with (`communication_webrtc_event`,
+  `_result`, and `_alloc`/`_free` for what it hands over). Events queue in
+  Swift and are pulled through `nextEvent(connection:)`, as everywhere else.
+- **The page's executor:** results and events arrive as calls into the
+  module's exports, which resume Swift tasks, so the page must run Swift's
+  concurrency on the browser's event loop, as Isomer and JavaScriptKit's
+  `JavaScriptEventLoop` do.
 - **`communication_webrtc.js`:** shipped in the package. It implements the
   imports over the browser's `RTCPeerConnection` and `RTCDataChannel`, and
   starts as P2PRC's `index.html` WebRTC code. It's plain ES, with no
@@ -146,7 +153,12 @@ backends. Then `WebRTCConnector` shrinks to `LiveKitWebRTCHost`.
    carry text and bytes both ways, and close; so do the core's 8 tests.
 6. The bundle built in CI for every native triple, released, and named in
    `Package.swift` by URL and checksum. Then Windows, then Android.
-7. `CommunicationWeb` and its JavaScript, tested in a headless browser.
+7. Done (2026-11-27): `CommunicationWeb` (`WebWebRTCHost`, over the
+   `communication_webrtc` imports declared in `CCommunicationWeb`) and
+   `Web/communication_webrtc.js`. Its test (`Tests/WebLoopback`, a package of
+   its own over JavaScriptKit) passes in headless Chromium: two connections
+   in one page negotiate, open a channel, carry text and bytes both ways,
+   and close.
 8. P2PRC moves onto Communication on the web and Android, and its own WebRTC
    glue goes.
 9. Media.
