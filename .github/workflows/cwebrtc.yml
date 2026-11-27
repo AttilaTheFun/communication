@@ -1,0 +1,101 @@
+name: CWebRTC bundle
+# CWebRTC's SE-0482 artifact bundle (Docs/platforms.md), by hand: each
+# platform's variant built on its own runner by Tools/cwebrtc_bundle from
+# LiveKit's prebuilt libwebrtc, then gathered, zipped and attached to a
+# draft release `cwebrtc-<version>` with its checksum. Publishing the draft
+# is the owner's; Package.swift then names the zip by URL and checksum.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The bundle's version (the release is cwebrtc-<version>)"
+        required: true
+      livekit:
+        description: "LiveKit's libwebrtc release (livekit/rust-sdks), one pinned in Tools/cwebrtc_bundle/Sources/Pins.swift"
+        required: true
+        default: webrtc-83af826
+permissions:
+  contents: read
+
+jobs:
+  variant:
+    strategy:
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Tools
+        run: apt-get update -qq && apt-get install -y -qq curl unzip zip
+      # The tool refuses a LiveKit release or platform it has no pinned
+      # SHA-256 for, and a download that doesn't match it.
+      - name: The variant
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          LIVEKIT: ${{ inputs.livekit }}
+        run: >-
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle variant
+          --platform "$PLATFORM" --livekit "$LIVEKIT" --out .build/variants
+      # The loopback test against this variant: two peers, a channel, text
+      # and bytes both ways, and a label reused.
+      - name: Loopback
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          clang -O1 -ICWebRTC/include CWebRTC/test/loopback.c -o .build/loopback \
+            -L".build/variants/$PLATFORM" -lcwebrtc -lpthread -lm -ldl
+          timeout 120 .build/loopback
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: variant-${{ matrix.platform }}
+          path: .build/variants
+          retention-days: 1
+
+  bundle:
+    needs: variant
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 30
+    permissions:
+      # The draft release and its assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl unzip zip gpg
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+          apt-get update -qq && apt-get install -y -qq gh
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: variant-*
+          path: .build/downloaded
+      - name: The version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::version must be MAJOR.MINOR.PATCH, not $VERSION"; exit 1; }
+      - name: The bundle
+        env:
+          VERSION: ${{ inputs.version }}
+        run: >-
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle assemble
+          --version "$VERSION" --out .build/CWebRTC.artifactbundle.zip .build/downloaded/*
+      - name: The draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          LIVEKIT: ${{ inputs.livekit }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          checksum="$(cat .build/CWebRTC.artifactbundle.zip.checksum)"
+          gh release create "cwebrtc-$VERSION" --draft --target "$GITHUB_SHA" --title "CWebRTC $VERSION" \
+            --notes "CWebRTC's artifact bundle, from LiveKit's libwebrtc $LIVEKIT (run $GITHUB_RUN_ID on $GITHUB_SHA). Checksum: $checksum" \
+            .build/CWebRTC.artifactbundle.zip
