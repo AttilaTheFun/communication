@@ -339,6 +339,16 @@ webrtc::scoped_refptr<webrtc::PeerConnectionInterface> connection_of(cw_peer *pe
     return peer->connection;
 }
 
+// Ends every operation libwebrtc hasn't, with error.
+void finish_pending(cw_peer *peer, const char *error) {
+    std::vector<std::shared_ptr<Pending>> pending;
+    {
+        std::lock_guard<std::mutex> guard(peer->lock);
+        pending = std::move(peer->pending);
+    }
+    for (auto &left : pending) left->finish(error, nullptr, nullptr);
+}
+
 }  // namespace
 
 void cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
@@ -356,10 +366,13 @@ void cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel)
     // second channel with a label in use (the remote's, or ours) replaces
     // the first: it's closed, and its observer unregistered before it goes,
     // so libwebrtc never calls a freed one.
+    // Its close is reported, then the new channel's state, so a remote
+    // reusing a local channel's label can't close it unseen.
     if (replaced) {
         auto old = replaced->channel();
         old->UnregisterObserver();
         old->Close();
+        emit(CW_EVENT_CHANNEL_STATE, label, "closed");
     }
     emit(CW_EVENT_CHANNEL_STATE, label, channel_name(channel->state()));
 }
@@ -534,6 +547,9 @@ void cw_peer_close(cw_peer *peer) {
     }
     for (auto &channel : channels) channel->Close();
     if (connection) connection->Close();
+    // An operation libwebrtc never ended ends now, so a caller awaiting it
+    // across a close (which holds the peer, so it isn't released) returns.
+    finish_pending(peer, "The peer connection was closed.");
     peer->emit(CW_EVENT_CLOSED);
 }
 
@@ -556,12 +572,7 @@ void cw_peer_release(cw_peer *peer) {
     connection = nullptr;
     channels.clear();
     // What libwebrtc never ended ends now.
-    std::vector<std::shared_ptr<Pending>> pending;
-    {
-        std::lock_guard<std::mutex> guard(peer->lock);
-        pending = std::move(peer->pending);
-    }
-    for (auto &left : pending) left->finish("The peer connection was released.", nullptr, nullptr);
+    finish_pending(peer, "The peer connection was released.");
     delete peer;
 }
 
