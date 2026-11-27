@@ -255,15 +255,17 @@ class ChannelObserver : public webrtc::DataChannelObserver {
 
     void retire() { current_ = false; }
 
-    // The channel's state, if it's changed since the last report.
+    // The channel's state, if it's changed since the last report. Read and
+    // reported under one lock, so two reporters (adopt and OnStateChange)
+    // can't report out of order ("open" before "connecting"): the channel's
+    // states only go forward, and so do the reports. Lock order: this, then
+    // the peer's (emit's).
     void report_state() {
         if (!current_) return;
+        std::lock_guard<std::mutex> guard(reported_lock_);
         const char *state = channel_name(channel_->state());
-        {
-            std::lock_guard<std::mutex> guard(reported_lock_);
-            if (state == reported_) return;
-            reported_ = state;
-        }
+        if (state == reported_) return;
+        reported_ = state;
         peer_->emit(CW_EVENT_CHANNEL_STATE, label_, state);
     }
 
@@ -444,11 +446,15 @@ bool cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel,
         if (old->state() != webrtc::DataChannelInterface::kClosed) old->Close();
     }
     // The state first, then the observer, which libwebrtc may hand what it
-    // buffered (messages) at once. Registered outside the lock (delivering
+    // buffered (messages) at once, then the state again. Registered outside the lock (delivering
     // emits, which takes it); `observer` keeps it alive until then even if
     // another adopt has replaced it, and its destructor unregisters it.
     observer->report_state();
     channel->RegisterObserver(observer.get());
+    // And again: a channel that changed state before it had an observer (a
+    // negotiated one, or one on a connected transport, can open in that gap)
+    // still reports it. The dedupe keeps this from reporting twice.
+    observer->report_state();
     return true;
 }
 

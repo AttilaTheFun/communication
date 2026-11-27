@@ -158,6 +158,8 @@ export class CommunicationWebRTC {
     }
   }
 
+  // A trap rethrown from resultSafely ends as an unhandled rejection here:
+  // the module is dead by then, so there's no one left to tell.
   async settle(token, work) {
     let outcome;
     try {
