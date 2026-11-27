@@ -199,13 +199,17 @@ struct cw_peer : public webrtc::PeerConnectionObserver {
         on_event(context, kind, channel.c_str(), text.c_str(), data, length);
     }
 
-    void adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
+    // Whether a channel named label is open (any state but closed).
+    bool label_in_use(const std::string &label);
+    // Takes a channel: false (and the channel closed) for a remote one whose
+    // label is in use.
+    bool adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel, bool remote);
 
     // webrtc::PeerConnectionObserver
     void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState state) override {
         emit(CW_EVENT_SIGNALING_STATE, "", signaling_name(state));
     }
-    void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override { adopt(channel); }
+    void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override { adopt(channel, true); }
     void OnNegotiationNeededEvent(uint32_t) override { emit(CW_EVENT_NEGOTIATION_NEEDED); }
     void OnStandardizedIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState state) override {
         emit(CW_EVENT_ICE_CONNECTION_STATE, "", ice_connection_name(state));
@@ -351,10 +355,26 @@ void finish_pending(cw_peer *peer, const char *error) {
 
 }  // namespace
 
-void cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
+bool cw_peer::label_in_use(const std::string &label) {
+    std::lock_guard<std::mutex> guard(lock);
+    auto found = channels.find(label);
+    return found != channels.end() && found->second->channel()->state() != webrtc::DataChannelInterface::kClosed;
+}
+
+// Channels are named by label (as WebRTCHost names them), one at a time: a
+// local one with a label in use is refused by cw_peer_open_channel, and a
+// remote one is closed here, unannounced, so a peer can't take over or
+// close the app's channels by reusing their labels. A label is free again
+// once its channel has closed; the closed one's observer is unregistered
+// before it goes, so libwebrtc never calls a freed one.
+bool cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel, bool remote) {
+    std::string label = channel->label();
+    if (remote && label_in_use(label)) {
+        channel->Close();
+        return false;
+    }
     auto observer = std::make_unique<ChannelObserver>(this, channel);
     channel->RegisterObserver(observer.get());
-    std::string label = channel->label();
     std::unique_ptr<ChannelObserver> replaced;
     {
         std::lock_guard<std::mutex> guard(lock);
@@ -362,19 +382,9 @@ void cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel)
         replaced = std::move(slot);
         slot = std::move(observer);
     }
-    // Channels are named by label here (as WebRTCHost names them), so a
-    // second channel with a label in use (the remote's, or ours) replaces
-    // the first: it's closed, and its observer unregistered before it goes,
-    // so libwebrtc never calls a freed one.
-    // Its close is reported, then the new channel's state, so a remote
-    // reusing a local channel's label can't close it unseen.
-    if (replaced) {
-        auto old = replaced->channel();
-        old->UnregisterObserver();
-        old->Close();
-        emit(CW_EVENT_CHANNEL_STATE, label, "closed");
-    }
+    if (replaced) replaced->channel()->UnregisterObserver();
     emit(CW_EVENT_CHANNEL_STATE, label, channel_name(channel->state()));
+    return true;
 }
 
 extern "C" {
@@ -505,6 +515,11 @@ int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_
         copy_error("Closed.", error, error_capacity);
         return -1;
     }
+    std::string name = label != nullptr ? label : "";
+    if (peer->label_in_use(name)) {
+        copy_error("A data channel named " + name + " is open.", error, error_capacity);
+        return -1;
+    }
     webrtc::DataChannelInit init;
     if (configuration != nullptr) {
         init.ordered = configuration->ordered != 0;
@@ -514,12 +529,12 @@ int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_
         init.negotiated = configuration->negotiated != 0;
         if (configuration->id >= 0) init.id = configuration->id;
     }
-    auto made = connection->CreateDataChannelOrError(label != nullptr ? label : "", &init);
+    auto made = connection->CreateDataChannelOrError(name, &init);
     if (!made.ok()) {
         copy_error(made.error().message(), error, error_capacity);
         return -1;
     }
-    peer->adopt(made.MoveValue());
+    peer->adopt(made.MoveValue(), false);
     return 0;
 }
 

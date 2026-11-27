@@ -18,9 +18,8 @@ and the native route proved on Linux arm64. The plan and its reasons are in
 - **`CommunicationNative`:** Swift over CWebRTC, conforming to `WebRTCHost`,
   with the core's real-WebRTC tests on Linux. Then prove Windows (its C
   runtime) and Android (a Swift SDK for Android).
-- **`CommunicationWeb`:** Swift over the `communication_webrtc` wasm imports,
-  and `communication_webrtc.js` over `RTCPeerConnection`, from P2PRC's
-  `index.html` WebRTC code, tested in a headless browser.
+- **The web test in CI:** `Tests/WebLoopback` in headless Chromium on a
+  pull request (a workflow job: the wasm SDK, PackageToJS, Playwright).
 - **Builds:** cross-compile for wasm and Android in CI, as well as Linux and
   macOS.
 

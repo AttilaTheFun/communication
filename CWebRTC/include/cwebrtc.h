@@ -103,9 +103,11 @@ void cw_peer_restart_ice(cw_peer *peer);
 
 /// Opens a data channel: 0, or -1 with the reason in error. It's reported
 /// with CW_EVENT_CHANNEL_STATE as it opens, as channels the remote opens are.
-/// Channels are named by label: a new one (ours or the remote's) with a
-/// label in use replaces the old, which is closed and reported "closed"
-/// first.
+/// Channels are named by label, one at a time: opening one with a label
+/// that's open (in any state but closed) fails, and a remote channel with
+/// such a label is closed at once and not reported, so a peer can't close
+/// or take over the app's channels. A label is free again once its channel
+/// has closed.
 int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_configuration *configuration,
                              char *error, size_t error_capacity);
 /// Sends on an open channel: 0, or -1 when it can't.
