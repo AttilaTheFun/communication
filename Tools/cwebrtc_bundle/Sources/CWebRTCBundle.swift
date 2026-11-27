@@ -342,7 +342,12 @@ struct ManifestBundle {
     var checksum: String
 
     static func read(_ manifest: String) throws -> ManifestBundle? {
-        let text = try String(contentsOfFile: manifest, encoding: .utf8)
+        // Only between the target's markers: the manifest names other URLs.
+        let lines = try String(contentsOfFile: manifest, encoding: .utf8).components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "// cwebrtc-bundle: target" }),
+              let end = lines[(start + 1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "// cwebrtc-bundle: end" })
+        else { throw ValidationError("no cwebrtc-bundle target markers in \(manifest)") }
+        let text = lines[(start + 1)..<end].joined(separator: "\n")
         func value(_ key: String) -> String? {
             guard let range = text.range(of: "\(key): \""),
                   let end = text[range.upperBound...].firstIndex(of: "\"") else { return nil }
@@ -433,7 +438,7 @@ struct Verify: ParsableCommand {
 /// before the first).
 enum Notes {
     static func since(lastRelease: Bool) throws -> String {
-        let before = (try? Shell.output("git", ["describe", "--tags", "--abbrev=0", "--match", "v*"]))?
+        let before = (try? Shell.output("git", ["describe", "--tags", "--abbrev=0", "--match", "v*"], quiet: true))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let files: [String]
         if before.isEmpty {
@@ -496,10 +501,11 @@ enum Shell {
         }
     }
 
-    static func output(_ program: String, _ arguments: [String]) throws -> String {
+    static func output(_ program: String, _ arguments: [String], quiet: Bool = false) throws -> String {
         let process = try make(program, arguments, nil)
         let pipe = Pipe()
         process.standardOutput = pipe
+        if quiet { process.standardError = FileHandle.nullDevice }
         try process.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
