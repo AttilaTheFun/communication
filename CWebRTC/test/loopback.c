@@ -1,9 +1,10 @@
 // CWebRTC's loopback test, in C so it uses only the C interface: two peers
 // in one process negotiate, trade candidates, open a channel, and send text
-// and bytes each way. Then labels in use: b's own second "chat" is refused,
-// and when both open "dup" at once each side closes the remote's copy, so
-// a peer can't take over a channel by its label; "chat" still carries text
-// after. Exits 0 when every message arrived.
+// and bytes each way. Labels in use: both open "dup" before they connect,
+// so each side's copy from the other collides with its own and is closed
+// (a peer can't take over a channel by its label), and b's own second
+// "chat" is refused; "chat" still carries text after. Exits 0 when every
+// message arrived and both "dup"s were turned away.
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@ struct side {
     int got_text;
     int got_bytes;
     int got_again;
+    int dup_closed;
 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -59,7 +61,11 @@ static void on_event(void *context, int32_t kind, const char *channel, const cha
         break;
     case CW_EVENT_CHANNEL_STATE:
         printf("%s: channel %s %s\n", s->name, channel, text);
-        if (strcmp(text, "open") == 0) s->open = 1;
+        if (strcmp(channel, "dup") == 0) {
+            if (strcmp(text, "closed") == 0) s->dup_closed = 1;
+        } else if (strcmp(text, "open") == 0) {
+            s->open = 1;
+        }
         break;
     case CW_EVENT_CONNECTION_STATE:
         printf("%s: connection %s\n", s->name, text);
@@ -130,6 +136,7 @@ static int until(int (*done)(side *, side *), side *a, side *b) {
 static int both_open(side *a, side *b) { return a->open && b->open; }
 static int all_received(side *a, side *b) { return a->got_text && a->got_bytes && b->got_text && b->got_bytes; }
 static int again_received(side *a, side *b) { return a->got_again && b->got_again; }
+static int dups_closed(side *a, side *b) { return a->dup_closed && b->dup_closed; }
 
 int main(void) {
     char error[256];
@@ -146,6 +153,13 @@ int main(void) {
     cw_channel_configuration channel = {1, -1, -1, NULL, 0, -1};
     if (cw_peer_open_channel(a.peer, "chat", &channel, error, sizeof error) != 0) {
         fprintf(stderr, "open channel failed: %s\n", error);
+        return 1;
+    }
+    // "dup" on both before they connect: each arrives at the other while
+    // its own is there.
+    if (cw_peer_open_channel(a.peer, "dup", &channel, error, sizeof error) != 0 ||
+        cw_peer_open_channel(b.peer, "dup", &channel, error, sizeof error) != 0) {
+        fprintf(stderr, "dup failed: %s\n", error);
         return 1;
     }
 
@@ -189,16 +203,6 @@ int main(void) {
         return 1;
     }
     printf("b: second chat refused: %s\n", error);
-    // Both open "dup" at once. Either each side's copy from the other
-    // collides with its own and is closed, or a's arrives first and b's own
-    // is refused: which is timing, and either keeps one "dup" per label.
-    if (cw_peer_open_channel(a.peer, "dup", &channel, error, sizeof error) != 0) {
-        fprintf(stderr, "a's dup failed: %s\n", error);
-        return 1;
-    }
-    if (cw_peer_open_channel(b.peer, "dup", &channel, error, sizeof error) != 0) {
-        printf("b: dup refused (a's arrived first): %s\n", error);
-    }
     struct timespec settle = {1, 0};
     nanosleep(&settle, NULL);
     if (cw_peer_send(a.peer, "chat", (const uint8_t *)"a again", 7, 0) != 0 ||
@@ -208,6 +212,10 @@ int main(void) {
     }
     if (!until(again_received, &a, &b)) {
         fprintf(stderr, "chat's messages after dup didn't arrive\n");
+        return 1;
+    }
+    if (!until(dups_closed, &a, &b)) {
+        fprintf(stderr, "a remote dup wasn't turned away\n");
         return 1;
     }
     cw_peer_release(a.peer);

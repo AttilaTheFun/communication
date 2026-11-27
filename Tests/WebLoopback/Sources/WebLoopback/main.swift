@@ -16,10 +16,10 @@ JavaScriptEventLoop.installGlobalExecutor()
 }
 
 /// Two connections in one page over the browser's WebRTC: negotiated with
-/// complete descriptions, a channel opened, text and bytes both ways; then
-/// labels in use (a second local "chat" refused, and both sides opening
-/// "dup" at once, each closing the other's copy) with "chat" still
-/// carrying text after; and close.
+/// complete descriptions, a channel opened, text and bytes both ways; labels
+/// in use (both open "dup" before they connect, so each side's copy from
+/// the other collides with its own and is closed, and a second local "chat"
+/// is refused) with "chat" still carrying text after; and close.
 @MainActor func loopback() async throws {
     let connector = HostConnector(host: WebWebRTCHost())
     let config = CommunicationConfiguration(iceServers: [])
@@ -29,6 +29,10 @@ JavaScriptEventLoop.installGlobalExecutor()
     let calleeEvents = Events(callee.events)
 
     try await caller.openDataChannel(label: "chat")
+    // "dup" on both before they connect: each arrives at the other while its
+    // own is there.
+    try await caller.openDataChannel(label: "dup")
+    try await callee.openDataChannel(label: "dup")
     try await caller.setLocalDescription(try await caller.offer())
     try await gathered(caller)
     guard let offer = await caller.localDescription else { throw Failure("no offer") }
@@ -51,13 +55,11 @@ JavaScriptEventLoop.installGlobalExecutor()
     // A second "chat" of the callee's own: refused, its label in use.
     if (try? await callee.openDataChannel(label: "chat")) != nil { throw Failure("a second chat was opened") }
     print("web loopback: a second chat is refused")
-    // Both open "dup" at once: each side's copy from the other collides
-    // with its own and is closed; "chat" goes on.
-    // (Or the caller's arrives first and the callee's own is refused: which
-    // is timing, and either keeps one "dup" per label.)
-    try await caller.openDataChannel(label: "dup")
-    if (try? await callee.openDataChannel(label: "dup")) == nil { print("web loopback: the callee's dup was refused") }
-    try await Task.sleep(nanoseconds: 1_000_000_000)
+    for (events, side) in [(callerEvents, "the caller"), (calleeEvents, "the callee")] {
+        try await expect(events, "\(side) turns the other's dup away") {
+            $0 == .dataChannelStateChanged(label: "dup", state: .closed)
+        }
+    }
     try await caller.send(text: "after dup")
     try await expect(calleeEvents, "chat carries text after dup") {
         $0 == .dataChannelMessage(label: "chat", message: .text("after dup"))
