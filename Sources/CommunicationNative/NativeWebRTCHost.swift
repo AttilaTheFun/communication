@@ -32,61 +32,67 @@ public final class NativeWebRTCHost: WebRTCHost, @unchecked Sendable {
 
     public func createOffer(connection id: Int32, options: String) async throws -> String {
         let options = try W3C.decode(W3C.OfferOptions.self, options)
-        let peer = try connection(id).peer
-        return try await NativeConnection.description { done, context in
-            cw_peer_create_offer(peer, Self.flag(options.iceRestart), Self.flag(options.offerToReceiveAudio),
-                                 Self.flag(options.offerToReceiveVideo), Self.flag(options.voiceActivityDetection), done, context)
+        return try await withConnection(id) { peer in
+            try await NativeConnection.result { done, context in
+                cw_peer_create_offer(peer, Self.flag(options.iceRestart), Self.flag(options.offerToReceiveAudio),
+                                     Self.flag(options.offerToReceiveVideo), Self.flag(options.voiceActivityDetection),
+                                     done, context)
+            }
         }
     }
 
     public func createAnswer(connection id: Int32, options: String) async throws -> String {
         let options = try W3C.decode(W3C.OfferOptions.self, options)
-        let peer = try connection(id).peer
-        return try await NativeConnection.description { done, context in
-            cw_peer_create_answer(peer, Self.flag(options.iceRestart), Self.flag(options.offerToReceiveAudio),
-                                  Self.flag(options.offerToReceiveVideo), Self.flag(options.voiceActivityDetection), done, context)
+        return try await withConnection(id) { peer in
+            try await NativeConnection.result { done, context in
+                cw_peer_create_answer(peer, Self.flag(options.iceRestart), Self.flag(options.offerToReceiveAudio),
+                                      Self.flag(options.offerToReceiveVideo), Self.flag(options.voiceActivityDetection),
+                                      done, context)
+            }
         }
     }
 
     public func setLocalDescription(connection id: Int32, description: String) async throws {
         let wire = try W3C.decode(W3C.SessionDescription.self, description)
-        let peer = try connection(id).peer
-        _ = try await NativeConnection.description { done, context in
-            cw_peer_set_local_description(peer, wire.type, wire.sdp, done, context)
+        _ = try await withConnection(id) { peer in
+            try await NativeConnection.result { done, context in
+                cw_peer_set_local_description(peer, wire.type, wire.sdp, done, context)
+            }
         }
     }
 
     public func setRemoteDescription(connection id: Int32, description: String) async throws {
         let wire = try W3C.decode(W3C.SessionDescription.self, description)
-        let peer = try connection(id).peer
-        _ = try await NativeConnection.description { done, context in
-            cw_peer_set_remote_description(peer, wire.type, wire.sdp, done, context)
+        _ = try await withConnection(id) { peer in
+            try await NativeConnection.result { done, context in
+                cw_peer_set_remote_description(peer, wire.type, wire.sdp, done, context)
+            }
         }
     }
 
     public func localDescription(connection id: Int32) async -> String {
-        guard let peer = (try? connection(id))?.peer else { return "" }
-        return (try? await NativeConnection.description { done, context in
-            cw_peer_local_description(peer, done, context)
+        (try? await withConnection(id) { peer in
+            try await NativeConnection.result { done, context in cw_peer_local_description(peer, done, context) }
         }) ?? ""
     }
 
     public func addCandidate(connection id: Int32, candidate: String) async throws {
         let wire = try W3C.decode(W3C.ICECandidate.self, candidate)
-        let peer = try connection(id).peer
-        _ = try await NativeConnection.description { done, context in
-            cw_peer_add_candidate(peer, wire.candidate, wire.sdpMid, wire.sdpMLineIndex ?? -1, done, context)
+        _ = try await withConnection(id) { peer in
+            try await NativeConnection.result { done, context in
+                cw_peer_add_candidate(peer, wire.candidate, wire.sdpMid, wire.sdpMLineIndex ?? -1, done, context)
+            }
         }
     }
 
     public func restartICE(connection id: Int32) async {
-        guard let peer = (try? connection(id))?.peer else { return }
-        cw_peer_restart_ice(peer)
+        guard let connection = try? connection(id) else { return }
+        withExtendedLifetime(connection) { cw_peer_restart_ice(connection.peer) }
     }
 
     public func openDataChannel(connection id: Int32, label: String, configuration: String) async throws {
         let wire = try W3C.decode(W3C.DataChannelInit.self, configuration)
-        let peer = try connection(id).peer
+        let connection = try connection(id)
         var channel = cw_channel_configuration(
             ordered: Self.flag(wire.ordered),
             max_packet_life_time: Int32(clamping: wire.maxPacketLifeTime ?? -1),
@@ -96,7 +102,10 @@ public final class NativeWebRTCHost: WebRTCHost, @unchecked Sendable {
             id: wire.id ?? -1
         )
         var error = [CChar](repeating: 0, count: 256)
-        guard cw_peer_open_channel(peer, label, &channel, &error, error.count) == 0 else {
+        let opened = withExtendedLifetime(connection) {
+            cw_peer_open_channel(connection.peer, label, &channel, &error, error.count)
+        }
+        guard opened == 0 else {
             throw CommunicationError(code: .initializationFailed,
                                      message: "Could not open data channel \(label): \(Self.text(error))")
         }
@@ -112,7 +121,7 @@ public final class NativeWebRTCHost: WebRTCHost, @unchecked Sendable {
 
     public func nextEvent(connection id: Int32) async throws -> WebRTCHostEvent {
         guard let connection = try? connection(id) else { return WebRTCHostEvent(.closed) }
-        return await connection.next()
+        return await connection.events.next()
     }
 
     public func disconnect(connection id: Int32) async {
@@ -120,10 +129,21 @@ public final class NativeWebRTCHost: WebRTCHost, @unchecked Sendable {
         connection?.close()
     }
 
+    /// Runs `body` with the connection's peer, the connection held until it
+    /// ends: a `disconnect` meanwhile can't free the peer under the call.
+    private func withConnection<T: Sendable>(_ id: Int32,
+                                             _ body: (OpaquePointer) async throws -> T) async throws -> T {
+        let connection = try connection(id)
+        defer { withExtendedLifetime(connection) {} }
+        return try await body(connection.peer)
+    }
+
     private func send(_ id: Int32, _ label: String, _ bytes: [UInt8], binary: Bool) throws {
-        let peer = try connection(id).peer
-        let sent = bytes.withUnsafeBufferPointer { buffer in
-            cw_peer_send(peer, label, buffer.baseAddress, buffer.count, binary ? 1 : 0)
+        let connection = try connection(id)
+        let sent = withExtendedLifetime(connection) {
+            bytes.withUnsafeBufferPointer { buffer in
+                cw_peer_send(connection.peer, label, buffer.baseAddress, buffer.count, binary ? 1 : 0)
+            }
         }
         guard sent == 0 else {
             throw CommunicationError(code: .invalidState, message: "Could not send on data channel \(label).")
@@ -144,22 +164,19 @@ public final class NativeWebRTCHost: WebRTCHost, @unchecked Sendable {
     }
 }
 
-/// One CWebRTC peer, and the events it reports, queued until the core pulls
-/// them.
+/// One CWebRTC peer. Its events go to `events`, which the peer owns (a
+/// retain handed to CWebRTC) until `cw_peer_release` returns: a callback
+/// never holds the last reference to anything, so nothing is freed on
+/// libwebrtc's signaling thread while CWebRTC holds its lock.
 private final class NativeConnection: @unchecked Sendable {
-    // `@unchecked`: the queue below is guarded by `lock`. CWebRTC calls
-    // `onEvent` on libwebrtc's signaling thread, and the core pulls from
-    // another.
-    private let lock = NSLock()
-    private var queue: [WebRTCHostEvent] = []
-    private var waiting: [CheckedContinuation<WebRTCHostEvent, Never>] = []
-    private var closed = false
-    // Set once in init, released in deinit.
+    // `@unchecked`: `peer` is set once in init and released in deinit;
+    // CWebRTC's peer is safe to call from any thread.
+    let events = EventQueue()
     private(set) var peer: OpaquePointer!
 
     init(_ configuration: W3C.Configuration) throws {
         var error = [CChar](repeating: 0, count: 256)
-        let context = Unmanaged.passUnretained(self).toOpaque()
+        let sink = Unmanaged.passRetained(events)
         // The C strings live until cw_peer_create returns, which copies them.
         let made: OpaquePointer? = Self.withServers(configuration.iceServers) { servers in
             var rtc = cw_configuration(
@@ -169,82 +186,38 @@ private final class NativeConnection: @unchecked Sendable {
                 gather_continually: configuration.native.gathersIceContinually ? 1 : 0,
                 low_cost_networks: configuration.native.candidateNetworkPolicy == "lowCost" ? 1 : 0
             )
-            return cw_peer_create(&rtc, NativeConnection.onEvent, context, &error, error.count)
+            return cw_peer_create(&rtc, EventQueue.onEvent, sink.toOpaque(), &error, error.count)
         }
         guard let made else {
+            sink.release()
             throw CommunicationError(code: .initializationFailed,
                                      message: "Unable to create a WebRTC peer connection: \(NativeWebRTCHost.text(error))")
         }
         peer = made
     }
 
-    deinit { cw_peer_release(peer) }
-
-    func next() async -> WebRTCHostEvent {
-        await withCheckedContinuation { continuation in
-            let event: WebRTCHostEvent? = lock.withLock {
-                if !queue.isEmpty { return queue.removeFirst() }
-                if closed { return WebRTCHostEvent(.closed) }
-                waiting.append(continuation)
-                return nil
-            }
-            if let event { continuation.resume(returning: event) }
-        }
+    deinit {
+        cw_peer_release(peer)
+        // No callback runs after cw_peer_release: the queue's retain goes.
+        Unmanaged.passUnretained(events).release()
+        events.end()
     }
 
     func close() {
         cw_peer_close(peer)
     }
 
-    private func post(_ event: WebRTCHostEvent) {
-        if event.kind == WebRTCHostEvent.Kind.closed.rawValue {
-            let waiters = lock.withLock {
-                closed = true
-                defer { waiting.removeAll() }
-                return waiting
-            }
-            for waiter in waiters { waiter.resume(returning: event) }
-            return
-        }
-        let waiter: CheckedContinuation<WebRTCHostEvent, Never>? = lock.withLock {
-            guard !closed else { return nil }
-            if waiting.isEmpty {
-                queue.append(event)
-                return nil
-            }
-            return waiting.removeFirst()
-        }
-        waiter?.resume(returning: event)
-    }
-
-    // The context is the connection itself, unretained: cw_peer_release in
-    // deinit stops the events before it's gone.
-    private static let onEvent: cw_event_fn = { context, kind, channel, text, data, length in
-        guard let context else { return }
-        let connection = Unmanaged<NativeConnection>.fromOpaque(context).takeUnretainedValue()
-        let bytes = data.map { [UInt8](UnsafeBufferPointer(start: $0, count: length)) } ?? []
-        connection.post(WebRTCHostEvent(
-            kind: kind,
-            channel: channel.map { String(cString: $0) } ?? "",
-            text: text.map { String(cString: $0) } ?? "",
-            data: bytes
-        ))
-    }
-
     /// Runs a CWebRTC call that ends with a `cw_result_fn`, and gives its
     /// description as `RTCSessionDescriptionInit` JSON ("" for a call that
-    /// makes none).
-    static func description(
-        _ call: (cw_result_fn, UnsafeMutableRawPointer) -> Void
-    ) async throws -> String {
+    /// makes none). CWebRTC calls every `cw_result_fn` exactly once, even
+    /// for a peer released first, so the box is always freed.
+    static func result(_ call: (cw_result_fn, UnsafeMutableRawPointer) -> Void) async throws -> String {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
             let box = Unmanaged.passRetained(ResultBox(continuation)).toOpaque()
             call(Self.onResult, box)
         }
     }
 
-    // The box is retained for the call and released here: CWebRTC calls
-    // every cw_result_fn exactly once.
     private static let onResult: cw_result_fn = { context, error, type, sdp in
         guard let context else { return }
         let box = Unmanaged<ResultBox>.fromOpaque(context).takeRetainedValue()
@@ -288,6 +261,87 @@ private final class NativeConnection: @unchecked Sendable {
                                  username: copy(server.username), credential: copy(server.credential))
         }
         return made.withUnsafeBufferPointer(body)
+    }
+}
+
+/// A connection's events, queued from libwebrtc's signaling thread until
+/// the core pulls them.
+private final class EventQueue: @unchecked Sendable {
+    // `@unchecked`: everything below is guarded by `lock`.
+    private let lock = NSLock()
+    private var queue: [WebRTCHostEvent] = []
+    private var waiting: [UUID: CheckedContinuation<WebRTCHostEvent, Never>] = [:]
+    private var order: [UUID] = []
+    private var closed = false
+
+    /// The next event, or `.closed` once the connection is gone. A pull
+    /// that's cancelled answers `.closed` for that call alone.
+    func next() async -> WebRTCHostEvent {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let event: WebRTCHostEvent? = lock.withLock {
+                    if !queue.isEmpty { return queue.removeFirst() }
+                    if closed || Task.isCancelled { return WebRTCHostEvent(.closed) }
+                    waiting[id] = continuation
+                    order.append(id)
+                    return nil
+                }
+                if let event { continuation.resume(returning: event) }
+            }
+        } onCancel: {
+            let waiter: CheckedContinuation<WebRTCHostEvent, Never>? = lock.withLock {
+                order.removeAll { $0 == id }
+                return waiting.removeValue(forKey: id)
+            }
+            waiter?.resume(returning: WebRTCHostEvent(.closed))
+        }
+    }
+
+    func post(_ event: WebRTCHostEvent) {
+        if event.kind == WebRTCHostEvent.Kind.closed.rawValue {
+            end()
+            return
+        }
+        let waiter: CheckedContinuation<WebRTCHostEvent, Never>? = lock.withLock {
+            guard !closed else { return nil }
+            guard let first = order.first else {
+                queue.append(event)
+                return nil
+            }
+            order.removeFirst()
+            return waiting.removeValue(forKey: first)
+        }
+        waiter?.resume(returning: event)
+    }
+
+    /// No more events: every pull answers `.closed`.
+    func end() {
+        let waiters: [CheckedContinuation<WebRTCHostEvent, Never>] = lock.withLock {
+            closed = true
+            defer {
+                waiting.removeAll()
+                order.removeAll()
+            }
+            return order.compactMap { waiting[$0] }
+        }
+        for waiter in waiters { waiter.resume(returning: WebRTCHostEvent(.closed)) }
+    }
+
+    // The context is this queue, retained for CWebRTC by NativeConnection
+    // and released after cw_peer_release: it's alive for every callback.
+    static let onEvent: cw_event_fn = { context, kind, channel, text, data, length in
+        guard let context else { return }
+        let queue = Unmanaged<EventQueue>.fromOpaque(context).takeUnretainedValue()
+        let bytes = data.map { [UInt8](UnsafeBufferPointer(start: $0, count: length)) } ?? []
+        // A text message's UTF-8 comes in data too, whole even with a NUL in it.
+        let isText = kind == WebRTCHostEvent.Kind.textMessage.rawValue
+        queue.post(WebRTCHostEvent(
+            kind: kind,
+            channel: channel.map { String(cString: $0) } ?? "",
+            text: isText ? String(decoding: bytes, as: UTF8.self) : (text.map { String(cString: $0) } ?? ""),
+            data: isText ? [] : bytes
+        ))
     }
 }
 #endif

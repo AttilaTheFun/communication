@@ -6,6 +6,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -162,6 +164,19 @@ struct Runtime {
 
 class ChannelObserver;
 
+// An operation's cw_result_fn, called once: by libwebrtc's observer when it
+// ends, or by cw_peer_release for one it never ended (libwebrtc doesn't
+// promise to call the observers of a connection it destroys).
+struct Pending {
+    std::atomic<bool> finished{false};
+    cw_result_fn done;
+    void *context;
+    Pending(cw_result_fn done, void *context) : done(done), context(context) {}
+    void finish(const char *error, const char *type, const char *sdp) {
+        if (!finished.exchange(true)) done(context, error, type, sdp);
+    }
+};
+
 }  // namespace
 
 struct cw_peer : public webrtc::PeerConnectionObserver {
@@ -171,6 +186,9 @@ struct cw_peer : public webrtc::PeerConnectionObserver {
     bool closed = false;
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> connection;
     std::map<std::string, std::unique_ptr<ChannelObserver>> channels;
+    // Operations started and maybe not yet ended, for cw_peer_release.
+    // Held strongly: an observer libwebrtc drops unended must still end.
+    std::vector<std::shared_ptr<Pending>> pending;
 
     // Events go out under the lock, so cw_peer_release, which clears
     // on_event under it, waits for one in progress and none follow.
@@ -210,7 +228,9 @@ class ChannelObserver : public webrtc::DataChannelObserver {
     ChannelObserver(cw_peer *peer, webrtc::scoped_refptr<webrtc::DataChannelInterface> channel)
         : peer_(peer), channel_(std::move(channel)), label_(channel_->label()) {}
 
-    webrtc::DataChannelInterface *channel() const { return channel_.get(); }
+    // A reference of the caller's own, so the channel outlives a close or a
+    // replacement on another thread.
+    webrtc::scoped_refptr<webrtc::DataChannelInterface> channel() const { return channel_; }
 
     void OnStateChange() override { peer_->emit(CW_EVENT_CHANNEL_STATE, label_, channel_name(channel_->state())); }
     void OnMessage(const webrtc::DataBuffer &buffer) override {
@@ -218,7 +238,10 @@ class ChannelObserver : public webrtc::DataChannelObserver {
         if (buffer.binary) {
             peer_->emit(CW_EVENT_DATA_MESSAGE, label_, "", bytes, buffer.data.size());
         } else {
-            peer_->emit(CW_EVENT_TEXT_MESSAGE, label_, std::string(reinterpret_cast<const char *>(bytes), buffer.data.size()));
+            // The UTF-8 in data and length too: text stops at a NUL.
+            peer_->emit(CW_EVENT_TEXT_MESSAGE, label_,
+                        std::string(reinterpret_cast<const char *>(bytes), buffer.data.size()), bytes,
+                        buffer.data.size());
         }
     }
 
@@ -230,22 +253,32 @@ class ChannelObserver : public webrtc::DataChannelObserver {
 
 // The end of an operation, to its cw_result_fn exactly once.
 struct Result {
-    cw_result_fn done;
-    void *context;
+    std::shared_ptr<Pending> pending;
     void operator()(const webrtc::RTCError &error, const webrtc::SessionDescriptionInterface *description = nullptr) const {
         if (!error.ok()) {
-            done(context, error.message()[0] != '\0' ? error.message() : "WebRTC operation failed", nullptr, nullptr);
+            pending->finish(error.message()[0] != '\0' ? error.message() : "WebRTC operation failed", nullptr, nullptr);
             return;
         }
         if (description == nullptr) {
-            done(context, nullptr, nullptr, nullptr);
+            pending->finish(nullptr, nullptr, nullptr);
             return;
         }
         std::string sdp;
         description->ToString(&sdp);
-        done(context, nullptr, webrtc::SdpTypeToString(description->GetType()), sdp.c_str());
+        pending->finish(nullptr, webrtc::SdpTypeToString(description->GetType()), sdp.c_str());
     }
 };
+
+// A Result for an operation on peer, which cw_peer_release can finish.
+Result result_for(cw_peer *peer, cw_result_fn done, void *context) {
+    auto made = std::make_shared<Pending>(done, context);
+    std::lock_guard<std::mutex> guard(peer->lock);
+    auto &list = peer->pending;
+    list.erase(std::remove_if(list.begin(), list.end(), [](const std::shared_ptr<Pending> &p) { return p->finished.load(); }),
+               list.end());
+    list.push_back(made);
+    return Result{made};
+}
 
 class CreateObserver : public webrtc::CreateSessionDescriptionObserver {
   public:
@@ -312,9 +345,21 @@ void cw_peer::adopt(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel)
     auto observer = std::make_unique<ChannelObserver>(this, channel);
     channel->RegisterObserver(observer.get());
     std::string label = channel->label();
+    std::unique_ptr<ChannelObserver> replaced;
     {
         std::lock_guard<std::mutex> guard(lock);
-        channels[label] = std::move(observer);
+        auto &slot = channels[label];
+        replaced = std::move(slot);
+        slot = std::move(observer);
+    }
+    // Channels are named by label here (as WebRTCHost names them), so a
+    // second channel with a label in use (the remote's, or ours) replaces
+    // the first: it's closed, and its observer unregistered before it goes,
+    // so libwebrtc never calls a freed one.
+    if (replaced) {
+        auto old = replaced->channel();
+        old->UnregisterObserver();
+        old->Close();
     }
     emit(CW_EVENT_CHANNEL_STATE, label, channel_name(channel->state()));
 }
@@ -365,7 +410,7 @@ cw_peer *cw_peer_create(const cw_configuration *configuration, cw_event_fn on_ev
 void cw_peer_create_offer(cw_peer *peer, int32_t ice_restart, int32_t receive_audio, int32_t receive_video,
                           int32_t voice_activity_detection, cw_result_fn done, void *context) {
     auto connection = connection_of(peer);
-    auto observer = webrtc::make_ref_counted<CreateObserver>(Result{done, context});
+    auto observer = webrtc::make_ref_counted<CreateObserver>(result_for(peer, done, context));
     if (!connection) return observer->OnFailure(webrtc::RTCError(webrtc::RTCErrorType::INVALID_STATE, "Closed."));
     connection->CreateOffer(observer.get(),
                             answer_options(ice_restart, receive_audio, receive_video, voice_activity_detection));
@@ -374,7 +419,7 @@ void cw_peer_create_offer(cw_peer *peer, int32_t ice_restart, int32_t receive_au
 void cw_peer_create_answer(cw_peer *peer, int32_t ice_restart, int32_t receive_audio, int32_t receive_video,
                            int32_t voice_activity_detection, cw_result_fn done, void *context) {
     auto connection = connection_of(peer);
-    auto observer = webrtc::make_ref_counted<CreateObserver>(Result{done, context});
+    auto observer = webrtc::make_ref_counted<CreateObserver>(result_for(peer, done, context));
     if (!connection) return observer->OnFailure(webrtc::RTCError(webrtc::RTCErrorType::INVALID_STATE, "Closed."));
     connection->CreateAnswer(observer.get(),
                              answer_options(ice_restart, receive_audio, receive_video, voice_activity_detection));
@@ -382,7 +427,7 @@ void cw_peer_create_answer(cw_peer *peer, int32_t ice_restart, int32_t receive_a
 
 void cw_peer_set_local_description(cw_peer *peer, const char *type, const char *sdp, cw_result_fn done,
                                    void *context) {
-    Result result{done, context};
+    Result result = result_for(peer, done, context);
     std::string problem;
     auto parsed = description(type, sdp, &problem);
     auto connection = connection_of(peer);
@@ -393,7 +438,7 @@ void cw_peer_set_local_description(cw_peer *peer, const char *type, const char *
 
 void cw_peer_set_remote_description(cw_peer *peer, const char *type, const char *sdp, cw_result_fn done,
                                     void *context) {
-    Result result{done, context};
+    Result result = result_for(peer, done, context);
     std::string problem;
     auto parsed = description(type, sdp, &problem);
     auto connection = connection_of(peer);
@@ -423,7 +468,7 @@ void cw_peer_local_description(cw_peer *peer, cw_result_fn done, void *context) 
 
 void cw_peer_add_candidate(cw_peer *peer, const char *candidate, const char *sdp_mid, int32_t sdp_mline_index,
                            cw_result_fn done, void *context) {
-    Result result{done, context};
+    Result result = result_for(peer, done, context);
     auto connection = connection_of(peer);
     if (!connection) return result(webrtc::RTCError(webrtc::RTCErrorType::INVALID_STATE, "Closed."));
     webrtc::SdpParseError error;
@@ -466,20 +511,20 @@ int32_t cw_peer_open_channel(cw_peer *peer, const char *label, const cw_channel_
 }
 
 int32_t cw_peer_send(cw_peer *peer, const char *label, const uint8_t *data, size_t length, int32_t binary) {
-    webrtc::DataChannelInterface *channel = nullptr;
+    webrtc::scoped_refptr<webrtc::DataChannelInterface> channel;
     {
         std::lock_guard<std::mutex> guard(peer->lock);
         auto found = peer->channels.find(label != nullptr ? label : "");
         if (found != peer->channels.end()) channel = found->second->channel();
     }
-    if (channel == nullptr || channel->state() != webrtc::DataChannelInterface::kOpen) return -1;
+    if (!channel || channel->state() != webrtc::DataChannelInterface::kOpen) return -1;
     webrtc::CopyOnWriteBuffer buffer(data, length);
     return channel->Send(webrtc::DataBuffer(buffer, binary != 0)) ? 0 : -1;
 }
 
 void cw_peer_close(cw_peer *peer) {
     webrtc::scoped_refptr<webrtc::PeerConnectionInterface> connection;
-    std::vector<webrtc::DataChannelInterface *> channels;
+    std::vector<webrtc::scoped_refptr<webrtc::DataChannelInterface>> channels;
     {
         std::lock_guard<std::mutex> guard(peer->lock);
         if (peer->closed) return;
@@ -487,7 +532,7 @@ void cw_peer_close(cw_peer *peer) {
         connection = peer->connection;
         for (auto &entry : peer->channels) channels.push_back(entry.second->channel());
     }
-    for (auto *channel : channels) channel->Close();
+    for (auto &channel : channels) channel->Close();
     if (connection) connection->Close();
     peer->emit(CW_EVENT_CLOSED);
 }
@@ -510,6 +555,13 @@ void cw_peer_release(cw_peer *peer) {
     // The connection goes before its observer, peer, does.
     connection = nullptr;
     channels.clear();
+    // What libwebrtc never ended ends now.
+    std::vector<std::shared_ptr<Pending>> pending;
+    {
+        std::lock_guard<std::mutex> guard(peer->lock);
+        pending = std::move(peer->pending);
+    }
+    for (auto &left : pending) left->finish("The peer connection was released.", nullptr, nullptr);
     delete peer;
 }
 

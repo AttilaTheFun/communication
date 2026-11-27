@@ -7,8 +7,14 @@
 // of the W3C dictionaries.
 //
 // Threads: every callback runs on libwebrtc's signaling thread. A callback
-// must not call back into this interface; copy what it gives and return.
-// Strings handed to a callback live only for that call.
+// must not call back into this interface, or free what its context points
+// to; copy what it gives and return. Strings handed to a callback live only
+// for that call.
+//
+// Lifetimes: a peer's on_event and context are used until cw_peer_release
+// returns, and not after. Every cw_result_fn is called exactly once, even
+// when the peer is closed or released first (with an error then), so a
+// context it owns can be freed there.
 #ifndef CWEBRTC_H
 #define CWEBRTC_H
 
@@ -33,7 +39,7 @@ enum {
     CW_EVENT_CANDIDATES_REMOVED = 6,   // text: a JSON array of RTCIceCandidateInit
     CW_EVENT_NEGOTIATION_NEEDED = 7,
     CW_EVENT_CHANNEL_STATE = 8,        // channel, text: its W3C ready state
-    CW_EVENT_TEXT_MESSAGE = 9,         // channel, text
+    CW_EVENT_TEXT_MESSAGE = 9,         // channel, text; its UTF-8 in data and length too
     CW_EVENT_DATA_MESSAGE = 10,        // channel, data and length
 };
 

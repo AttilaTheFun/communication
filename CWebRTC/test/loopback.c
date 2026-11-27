@@ -1,6 +1,8 @@
 // CWebRTC's loopback test, in C so it uses only the C interface: two peers
 // in one process negotiate, trade candidates, open a channel, and send text
-// and bytes each way. Exits 0 when every message arrived.
+// and bytes each way. Then b opens a second channel with the same label,
+// which replaces the first on both sides (a freed observer would crash
+// here), and text crosses again on it. Exits 0 when every message arrived.
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +19,7 @@ struct side {
     int open;
     int got_text;
     int got_bytes;
+    int got_again;
 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -61,8 +64,9 @@ static void on_event(void *context, int32_t kind, const char *channel, const cha
         printf("%s: connection %s\n", s->name, text);
         break;
     case CW_EVENT_TEXT_MESSAGE:
-        printf("%s: text \"%s\" on %s\n", s->name, text, channel);
-        s->got_text = 1;
+        printf("%s: text \"%s\" (%zu bytes) on %s\n", s->name, text, length, channel);
+        if (strstr(text, "again")) s->got_again = 1;
+        else s->got_text = 1;
         break;
     case CW_EVENT_DATA_MESSAGE:
         printf("%s: %zu bytes on %s\n", s->name, length, channel);
@@ -124,6 +128,7 @@ static int until(int (*done)(side *, side *), side *a, side *b) {
 
 static int both_open(side *a, side *b) { return a->open && b->open; }
 static int all_received(side *a, side *b) { return a->got_text && a->got_bytes && b->got_text && b->got_bytes; }
+static int again_received(side *a, side *b) { return a->got_again && b->got_again; }
 
 int main(void) {
     char error[256];
@@ -175,6 +180,27 @@ int main(void) {
     }
     if (!until(all_received, &a, &b)) {
         fprintf(stderr, "not every message arrived\n");
+        return 1;
+    }
+    // b's own "chat": on a it's a second channel with the label in use.
+    pthread_mutex_lock(&lock);
+    a.open = b.open = 0;
+    pthread_mutex_unlock(&lock);
+    if (cw_peer_open_channel(b.peer, "chat", &channel, error, sizeof error) != 0) {
+        fprintf(stderr, "second channel failed: %s\n", error);
+        return 1;
+    }
+    if (!until(both_open, &a, &b)) {
+        fprintf(stderr, "the second channel didn't open\n");
+        return 1;
+    }
+    if (cw_peer_send(a.peer, "chat", (const uint8_t *)"a again", 7, 0) != 0 ||
+        cw_peer_send(b.peer, "chat", (const uint8_t *)"b again", 7, 0) != 0) {
+        fprintf(stderr, "send on the second channel failed\n");
+        return 1;
+    }
+    if (!until(again_received, &a, &b)) {
+        fprintf(stderr, "the second channel's messages didn't arrive\n");
         return 1;
     }
     cw_peer_release(a.peer);
