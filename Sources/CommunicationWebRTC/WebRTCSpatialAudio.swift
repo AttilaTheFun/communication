@@ -112,12 +112,17 @@ public final class WebRTCSpatialAudio {
             guard let converter else { return }
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / hardware.sampleRate) + 32
             guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
-            var fed = false
+            // The converter's input block is @Sendable: it takes the tap's
+            // one buffer through OneBuffer, once, rather than capturing the
+            // buffer and a flag.
+            let source = OneBuffer(buffer)
             converter.convert(to: out, error: nil) { _, status in
-                if fed { status.pointee = .noDataNow; return nil }
-                fed = true
+                guard let next = source.take() else {
+                    status.pointee = .noDataNow
+                    return nil
+                }
                 status.pointee = .haveData
-                return buffer
+                return next
             }
             guard let samples = out.floatChannelData?[0], out.frameLength > 0 else { return }
             for audio in listeners.withLock({ $0 }) { audio.deliverCaptured(samples, frameCount: Int(out.frameLength)) }
@@ -175,4 +180,24 @@ public final class WebRTCSpatialAudio {
         engine.detach(node)
     }
 }
+
+/// One captured buffer, handed to an AVAudioConverter's input block once.
+/// `@unchecked Sendable`: the buffer (not Sendable) is reached only through
+/// `take()`, under `lock`; the block runs inside `convert`, which this tap
+/// calls synchronously, so it never outlives the buffer.
+private final class OneBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer: AVAudioPCMBuffer?
+
+    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+
+    /// The buffer the first time, nil after.
+    func take() -> AVAudioPCMBuffer? {
+        lock.withLock {
+            defer { buffer = nil }
+            return buffer
+        }
+    }
+}
+
 #endif
