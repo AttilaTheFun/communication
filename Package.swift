@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "Communication", targets: ["Communication"]),
         .library(name: "CommunicationCore", targets: ["CommunicationCore"]),
         .library(name: "CommunicationWebRTC", targets: ["CommunicationWebRTC"]),
+        .library(name: "CommunicationNative", targets: ["CommunicationNative"]),
     ],
     dependencies: [
         // LiveKit's packaging of Google's WebRTC (class prefix LK): the same
@@ -57,6 +58,19 @@ let package = Package(
         .testTarget(
             name: "CommunicationWebRTCTests",
             dependencies: ["CommunicationWebRTC", "CommunicationCore"]
+        ),
+        // Linux, Windows and Android: libwebrtc through CWebRTC, the C
+        // interface over LiveKit's prebuilt static libwebrtc
+        // (Docs/platforms.md). Until CWebRTC's artifact bundle is released
+        // and named here, the target's files are empty
+        // (`#if canImport(CWebRTC)`).
+        .target(
+            name: "CommunicationNative",
+            dependencies: ["Communication", "CommunicationCore"]
+        ),
+        .testTarget(
+            name: "CommunicationNativeTests",
+            dependencies: ["CommunicationNative", "CommunicationCore"]
         ),
         // Examples/: small programs showing the package; not products.
         .executableTarget(
