@@ -9,7 +9,7 @@ struct CWebRTCBundle: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cwebrtc-bundle",
         abstract: "Build CWebRTC's artifact bundle from LiveKit's prebuilt libwebrtc.",
-        subcommands: [Variant.self, Assemble.self]
+        subcommands: [Variant.self, Assemble.self, Pin.self, NextVersion.self]
     )
 }
 
@@ -210,6 +210,102 @@ struct Assemble: ParsableCommand {
         let checksum = try Shell.output("swift", ["package", "compute-checksum", zip.path]).trimmingCharacters(in: .whitespacesAndNewlines)
         print("cwebrtc-bundle: \(zip.path), \(entries.count) variants, checksum \(checksum)")
         try (checksum + "\n").write(to: zip.appendingPathExtension("checksum"), atomically: true, encoding: .utf8)
+    }
+}
+
+/// Points Package.swift's CWebRTC at a bundle: a release's, by URL and
+/// checksum (the release commit's), or one on disk (the release's tests,
+/// before there's a release). Only the text between the cwebrtc-bundle
+/// markers changes.
+struct Pin: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Point Package.swift's CWebRTC at a bundle.")
+
+    @Option(help: "The bundle's URL (a release asset).")
+    var url: String?
+
+    @Option(help: "The bundle's SwiftPM checksum, with --url.")
+    var checksum: String?
+
+    @Option(help: "A bundle on disk (a .artifactbundle folder, relative to the package).")
+    var path: String?
+
+    @Option(help: "The manifest.")
+    var manifest: String = "Package.swift"
+
+    func validate() throws {
+        guard (url != nil) != (path != nil) else { throw ValidationError("give --url (with --checksum) or --path") }
+        if url != nil, checksum?.count != 64 { throw ValidationError("--url needs --checksum, 64 hex digits") }
+    }
+
+    func run() throws {
+        var text = try String(contentsOfFile: manifest, encoding: .utf8)
+        let target: String
+        if let url, let checksum {
+            target = """
+                    .binaryTarget(
+                        name: "CWebRTC",
+                        url: "\(url)",
+                        checksum: "\(checksum)"
+                    ),
+            """
+        } else {
+            target = """
+                    .binaryTarget(name: "CWebRTC", path: "\(path ?? "")"),
+            """
+        }
+        text = try Self.fill(text, "dependency", """
+                        .target(name: "CWebRTC", condition: .when(platforms: [.linux])),
+        """)
+        text = try Self.fill(text, "target", target)
+        try text.write(toFile: manifest, atomically: true, encoding: .utf8)
+        print("cwebrtc-bundle: \(manifest)'s CWebRTC is \(url ?? path ?? "")")
+    }
+
+    /// The lines between `// cwebrtc-bundle: <region>` and the next
+    /// `// cwebrtc-bundle: end`, replaced with body.
+    static func fill(_ text: String, _ region: String, _ body: String) throws -> String {
+        var lines = text.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "// cwebrtc-bundle: \(region)" }),
+              let end = lines[(start + 1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "// cwebrtc-bundle: end" })
+        else { throw ValidationError("no cwebrtc-bundle \(region) markers in the manifest") }
+        lines.replaceSubrange((start + 1)..<end, with: body.components(separatedBy: "\n"))
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// The version the next release takes: one past the highest vX.Y.N among
+/// the releases (drafts too) and tags of VERSION's line X.Y, or X.Y.1. A
+/// line with a published release is closed: the next needs VERSION moved on.
+struct NextVersion: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "next-version",
+        abstract: "The next release's version, from VERSION and the repository's releases and tags."
+    )
+
+    @Option(help: "The repository (owner/name), for its releases.")
+    var repository: String
+
+    @Option(help: "The line file.")
+    var versionFile: String = "VERSION"
+
+    func run() throws {
+        let line = try String(contentsOfFile: versionFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = line.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 3, parts[2] == 0 else { throw ValidationError("\(versionFile) is \(line), not X.Y.0") }
+        let prefix = "v\(parts[0]).\(parts[1])."
+        struct Release: Decodable { let tagName: String; let isDraft: Bool }
+        let releases = try JSONDecoder().decode([Release].self, from: Data(Shell.output("gh", [
+            "release", "list", "--repo", repository, "--limit", "200", "--json", "tagName,isDraft",
+        ]).utf8))
+        let tags = try Shell.output("git", ["tag", "--list", "\(prefix)*"]).split(separator: "\n").map(String.init)
+        if let published = releases.first(where: { $0.tagName.hasPrefix(prefix) && !$0.isDraft }) {
+            throw ValidationError("\(published.tagName) is published, so the \(parts[0]).\(parts[1]) line is closed: move \(versionFile) to \(parts[0]).\(parts[1] + 1).0")
+        }
+        let patches = (releases.map(\.tagName) + tags).compactMap { tag -> Int? in
+            guard tag.hasPrefix(prefix) else { return nil }
+            return Int(tag.dropFirst(prefix.count))
+        }
+        print("\(parts[0]).\(parts[1]).\((patches.max() ?? 0) + 1)")
     }
 }
 

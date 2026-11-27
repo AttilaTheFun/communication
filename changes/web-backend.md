@@ -1,0 +1,1 @@
+- `CommunicationWeb` for the web (wasm): `WebWebRTCHost` over the browser's own `RTCPeerConnection`, through the `communication_webrtc` wasm imports and `Web/communication_webrtc.js`, with no dependency. A page passes the JavaScript's imports to its wasm loader and runs Swift's concurrency on the browser's event loop.

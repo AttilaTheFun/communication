@@ -1,0 +1,1 @@
+- Data channels are named by label, one at a time, on every backend: opening one with a label in use fails, and a remote channel with such a label is closed unannounced, so a peer can't take over or close the app's channels.
