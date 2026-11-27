@@ -107,6 +107,9 @@ struct Variant: ParsableCommand {
         let shim = objects.appendingPathComponent("cwebrtc.o")
         try Shell.run(cxx, [
             "-std=c++20", "-O2", "-fPIC", "-w", "-nostdinc++",
+            // Reproducible: the build's paths don't reach the object
+            // (Package.swift's checksum is rebuilt and compared).
+            "-ffile-prefix-map=\(release.path)=libwebrtc", "-ffile-prefix-map=\(sources.path)=CWebRTC",
             "-isystem", include.appendingPathComponent("buildtools/third_party/libc++").path,
             "-isystem", include.appendingPathComponent("third_party/libc++/src/include").path,
             "-isystem", include.appendingPathComponent("third_party/libc++abi/src/include").path,
@@ -117,7 +120,8 @@ struct Variant: ParsableCommand {
         var added = [shim.path]
         for source in platform.extraSources {
             let object = objects.appendingPathComponent(source + ".o")
-            try Shell.run(cc, ["-O2", "-fPIC", "-c", sources.appendingPathComponent("src/\(source)").path, "-o", object.path])
+            try Shell.run(cc, ["-O2", "-fPIC", "-ffile-prefix-map=\(sources.path)=CWebRTC",
+                               "-c", sources.appendingPathComponent("src/\(source)").path, "-o", object.path])
             added.append(object.path)
         }
 
@@ -206,7 +210,21 @@ struct Assemble: ParsableCommand {
         let info = BundleInfo(schemaVersion: "1.0", artifacts: ["CWebRTC": .init(type: "staticLibrary", version: version, variants: entries)])
         try JSONEncoder.pretty.encode(info).write(to: bundle.appendingPathComponent("info.json"))
         try? fm.removeItem(at: zip)
-        try Shell.run("zip", ["-q", "-r", "-y", zip.path, "CWebRTC.artifactbundle"], in: staging)
+        // Reproducible: every file's time fixed and the entries in order, with
+        // no extra attributes, so the same variants give the same zip (and
+        // checksum) wherever it's built.
+        let epoch = Date(timeIntervalSince1970: 315_532_800) // 1980-01-01, zip's earliest
+        var files: [String] = []
+        if let walker = fm.enumerator(atPath: staging.path) {
+            for case let relative as String in walker {
+                try fm.setAttributes([.modificationDate: epoch], ofItemAtPath: staging.appendingPathComponent(relative).path)
+                var isDirectory: ObjCBool = false
+                if fm.fileExists(atPath: staging.appendingPathComponent(relative).path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                    files.append(relative)
+                }
+            }
+        }
+        try Shell.run("zip", ["-q", "-X", "-D", zip.path] + files.sorted(), in: staging)
         let checksum = try Shell.output("swift", ["package", "compute-checksum", zip.path]).trimmingCharacters(in: .whitespacesAndNewlines)
         print("cwebrtc-bundle: \(zip.path), \(entries.count) variants, checksum \(checksum)")
         try (checksum + "\n").write(to: zip.appendingPathExtension("checksum"), atomically: true, encoding: .utf8)
