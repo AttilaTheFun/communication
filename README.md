@@ -45,8 +45,10 @@ built for 26.0); there is no Metal video view on visionOS.
 The web has `CommunicationWeb` over the browser's own WebRTC, with no
 dependency: pass `Web/communication_webrtc.js`'s imports to your wasm loader
 (the file says how), and run Swift's concurrency on the browser's event
-loop. Linux, Windows and Android are coming over the same shared core,
-through LiveKit's prebuilt libwebrtc (`Docs/platforms.md`).
+loop. Linux (x64 and arm64) has `CommunicationNative`, over LiveKit's
+prebuilt libwebrtc through CWebRTC, which SwiftPM downloads as a binary
+artifact bundle: nothing to install. Android and Windows are coming over
+the same (`Docs/platforms.md`).
 
 [livekit]: https://github.com/livekit/webrtc-xcframework
 

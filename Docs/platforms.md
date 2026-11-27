@@ -173,8 +173,11 @@ backends. Then `WebRTCConnector` shrinks to `LiveKitWebRTCHost`.
    (`NativeWebRTCHost`). Over a locally built bundle, the core's
    real-WebRTC test passes: two connections negotiate, open a channel,
    carry text and bytes both ways, and close; so do the core's 8 tests.
-6. The bundle built in CI for every native triple, released, and named in
-   `Package.swift` by URL and checksum. Then Windows, then Android.
+6. Done (2026-11-27) for Linux: `cwebrtc-0.1.0`, built by
+   `.github/workflows/cwebrtc.yml` (Tools/cwebrtc_bundle, from LiveKit
+   `webrtc-83af826`, x64 and arm64, each variant's loopback run on its own
+   runner), named in `Package.swift` by URL and checksum. Android's variants
+   next (proved, above; the workflow needs the NDK), then Windows.
 7. Done (2026-11-27): `CommunicationWeb` (`WebWebRTCHost`, over the
    `communication_webrtc` imports declared in `CCommunicationWeb`) and
    `Web/communication_webrtc.js`. Its test (`Tests/WebLoopback`, a package of

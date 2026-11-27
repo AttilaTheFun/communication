@@ -60,14 +60,24 @@ let package = Package(
             name: "CommunicationWebRTCTests",
             dependencies: ["CommunicationWebRTC", "CommunicationCore"]
         ),
-        // Linux, Windows and Android: libwebrtc through CWebRTC, the C
-        // interface over LiveKit's prebuilt static libwebrtc
-        // (Docs/platforms.md). Until CWebRTC's artifact bundle is released
-        // and named here, the target's files are empty
+        // Linux (Windows and Android to come): libwebrtc through CWebRTC,
+        // the C interface over LiveKit's prebuilt static libwebrtc
+        // (Docs/platforms.md), as an SE-0482 artifact bundle built by
+        // Tools/cwebrtc_bundle and released as cwebrtc-<version>. Where the
+        // bundle has no variant, the target's files are empty
         // (`#if canImport(CWebRTC)`).
         .target(
             name: "CommunicationNative",
-            dependencies: ["Communication", "CommunicationCore"]
+            dependencies: [
+                "Communication",
+                "CommunicationCore",
+                .target(name: "CWebRTC", condition: .when(platforms: [.linux])),
+            ]
+        ),
+        .binaryTarget(
+            name: "CWebRTC",
+            url: "https://github.com/AttilaTheFun/communication/releases/download/cwebrtc-0.1.0/CWebRTC.artifactbundle.zip",
+            checksum: "ce91f8f41fbf6754ca2dcfb8464b33e107a079a06ad0ae4044cc7c1d439749cb"
         ),
         .testTarget(
             name: "CommunicationNativeTests",
