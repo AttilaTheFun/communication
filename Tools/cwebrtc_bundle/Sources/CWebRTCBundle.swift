@@ -9,7 +9,7 @@ struct CWebRTCBundle: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cwebrtc-bundle",
         abstract: "Build CWebRTC's artifact bundle from LiveKit's prebuilt libwebrtc.",
-        subcommands: [Variant.self, Assemble.self, Pin.self, NextVersion.self]
+        subcommands: [Variant.self, Assemble.self, Pin.self, NextVersion.self, Prepare.self, Verify.self]
     )
 }
 
@@ -107,6 +107,9 @@ struct Variant: ParsableCommand {
         let shim = objects.appendingPathComponent("cwebrtc.o")
         try Shell.run(cxx, [
             "-std=c++20", "-O2", "-fPIC", "-w", "-nostdinc++",
+            // Reproducible: the build's paths don't reach the object
+            // (Package.swift's checksum is rebuilt and compared).
+            "-ffile-prefix-map=\(release.path)=libwebrtc", "-ffile-prefix-map=\(sources.path)=CWebRTC",
             "-isystem", include.appendingPathComponent("buildtools/third_party/libc++").path,
             "-isystem", include.appendingPathComponent("third_party/libc++/src/include").path,
             "-isystem", include.appendingPathComponent("third_party/libc++abi/src/include").path,
@@ -117,7 +120,8 @@ struct Variant: ParsableCommand {
         var added = [shim.path]
         for source in platform.extraSources {
             let object = objects.appendingPathComponent(source + ".o")
-            try Shell.run(cc, ["-O2", "-fPIC", "-c", sources.appendingPathComponent("src/\(source)").path, "-o", object.path])
+            try Shell.run(cc, ["-O2", "-fPIC", "-ffile-prefix-map=\(sources.path)=CWebRTC",
+                               "-c", sources.appendingPathComponent("src/\(source)").path, "-o", object.path])
             added.append(object.path)
         }
 
@@ -169,7 +173,7 @@ struct Variant: ParsableCommand {
 struct Assemble: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Gather variants into the artifact bundle and zip it.")
 
-    @Option(help: "The bundle's version (the release's).")
+    @Option(help: "The bundle's version (the release's), or `auto`: the one Package.swift's bundle URL names, else VERSION's line's first (X.Y.1). It's in info.json, so in the checksum: CI and the release take the one prepare did.")
     var version: String
 
     @Option(help: "Where the zip goes.")
@@ -179,6 +183,7 @@ struct Assemble: ParsableCommand {
     var variants: [String]
 
     func run() throws {
+        let version = try self.version == "auto" ? Self.autoVersion() : self.version
         let fm = FileManager.default
         let zip = URL(fileURLWithPath: out)
         let staging = zip.deletingLastPathComponent().appendingPathComponent("staging")
@@ -206,7 +211,21 @@ struct Assemble: ParsableCommand {
         let info = BundleInfo(schemaVersion: "1.0", artifacts: ["CWebRTC": .init(type: "staticLibrary", version: version, variants: entries)])
         try JSONEncoder.pretty.encode(info).write(to: bundle.appendingPathComponent("info.json"))
         try? fm.removeItem(at: zip)
-        try Shell.run("zip", ["-q", "-r", "-y", zip.path, "CWebRTC.artifactbundle"], in: staging)
+        // Reproducible: every file's time fixed and the entries in order, with
+        // no extra attributes, so the same variants give the same zip (and
+        // checksum) wherever it's built.
+        let epoch = Date(timeIntervalSince1970: 315_532_800) // 1980-01-01, zip's earliest
+        var files: [String] = []
+        if let walker = fm.enumerator(atPath: staging.path) {
+            for case let relative as String in walker {
+                try fm.setAttributes([.modificationDate: epoch], ofItemAtPath: staging.appendingPathComponent(relative).path)
+                var isDirectory: ObjCBool = false
+                if fm.fileExists(atPath: staging.appendingPathComponent(relative).path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                    files.append(relative)
+                }
+            }
+        }
+        try Shell.run("zip", ["-q", "-X", "-D", zip.path] + files.sorted(), in: staging)
         let checksum = try Shell.output("swift", ["package", "compute-checksum", zip.path]).trimmingCharacters(in: .whitespacesAndNewlines)
         print("cwebrtc-bundle: \(zip.path), \(entries.count) variants, checksum \(checksum)")
         try (checksum + "\n").write(to: zip.appendingPathExtension("checksum"), atomically: true, encoding: .utf8)
@@ -238,6 +257,10 @@ struct Pin: ParsableCommand {
     }
 
     func run() throws {
+        try Self.apply(url: url, checksum: checksum, path: path, manifest: manifest)
+    }
+
+    static func apply(url: String?, checksum: String?, path: String?, manifest: String) throws {
         var text = try String(contentsOfFile: manifest, encoding: .utf8)
         let target: String
         if let url, let checksum {
@@ -289,6 +312,10 @@ struct NextVersion: ParsableCommand {
     var versionFile: String = "VERSION"
 
     func run() throws {
+        print(try Self.next(repository: repository, versionFile: versionFile))
+    }
+
+    static func next(repository: String, versionFile: String) throws -> String {
         let line = try String(contentsOfFile: versionFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = line.split(separator: ".").compactMap { Int($0) }
         guard parts.count == 3, parts[2] == 0 else { throw ValidationError("\(versionFile) is \(line), not X.Y.0") }
@@ -305,7 +332,138 @@ struct NextVersion: ParsableCommand {
             guard tag.hasPrefix(prefix) else { return nil }
             return Int(tag.dropFirst(prefix.count))
         }
-        print("\(parts[0]).\(parts[1]).\((patches.max() ?? 0) + 1)")
+        return "\(parts[0]).\(parts[1]).\((patches.max() ?? 0) + 1)"
+    }
+}
+
+/// The manifest's CWebRTC, as the release process reads it: the URL and
+/// checksum between the cwebrtc-bundle markers, if it names a release's.
+struct ManifestBundle {
+    var url: String
+    var checksum: String
+
+    static func read(_ manifest: String) throws -> ManifestBundle? {
+        // Only between the target's markers: the manifest names other URLs.
+        let lines = try String(contentsOfFile: manifest, encoding: .utf8).components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "// cwebrtc-bundle: target" }),
+              let end = lines[(start + 1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "// cwebrtc-bundle: end" })
+        else { throw ValidationError("no cwebrtc-bundle target markers in \(manifest)") }
+        let text = lines[(start + 1)..<end].joined(separator: "\n")
+        func value(_ key: String) -> String? {
+            guard let range = text.range(of: "\(key): \""),
+                  let end = text[range.upperBound...].firstIndex(of: "\"") else { return nil }
+            return String(text[range.upperBound..<end])
+        }
+        guard let url = value("url"), let checksum = value("checksum") else { return nil }
+        return ManifestBundle(url: url, checksum: checksum)
+    }
+
+    static func url(repository: String, version: String) -> String {
+        "https://github.com/\(repository)/releases/download/v\(version)/CWebRTC.artifactbundle.zip"
+    }
+}
+
+func swiftPMChecksum(_ zip: String) throws -> String {
+    try Shell.output("swift", ["package", "compute-checksum", zip]).trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// The next release, prepared on a branch for a pull request to main
+/// (Docs/releasing.md): Package.swift names that release's bundle (this
+/// zip, which CI and the release rebuild and compare), and CHANGELOG.md gets
+/// the release's notes, the changes/ entries added since the release before.
+struct Prepare: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Point Package.swift at the next release's bundle, and add its notes to CHANGELOG.md.")
+
+    @Option(help: "The bundle (from `assemble`), reproducible from this commit.")
+    var zip: String
+
+    @Option(help: "The repository (owner/name), for the URL and its releases.")
+    var repository: String
+
+    @Option(help: "The version (default: next-version's).")
+    var version: String?
+
+    func run() throws {
+        let version = try self.version ?? NextVersion.next(repository: repository, versionFile: "VERSION")
+        let checksum = try swiftPMChecksum(zip)
+        let url = ManifestBundle.url(repository: repository, version: version)
+        try Pin.apply(url: url, checksum: checksum, path: nil, manifest: "Package.swift")
+        let notes = try Notes.since(lastRelease: true)
+        let changelog = try String(contentsOfFile: "CHANGELOG.md", encoding: .utf8)
+        var lines = changelog.components(separatedBy: "\n")
+        let header = min(3, lines.count)
+        lines.insert(contentsOf: ["", "## \(version)", ""] + notes.components(separatedBy: "\n").filter { !$0.isEmpty }, at: header)
+        try lines.joined(separator: "\n").write(toFile: "CHANGELOG.md", atomically: true, encoding: .utf8)
+        print("cwebrtc-bundle: prepared \(version): Package.swift names \(url) (\(checksum)), CHANGELOG.md has its notes")
+    }
+}
+
+/// Fails unless Package.swift names this bundle: its checksum, and, with
+/// --version, that release's URL. CI runs it on every pull request (a
+/// manifest that names a bundle CI doesn't reproduce fails) and the release
+/// run before it drafts (failing closed).
+struct Verify: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Check Package.swift names this bundle.")
+
+    @Option(help: "The bundle, rebuilt here.")
+    var zip: String
+
+    @Option(help: "The release's version: its URL must be the manifest's too.")
+    var version: String?
+
+    @Option(help: "The repository (owner/name), with --version.")
+    var repository: String?
+
+    @Option(help: "The manifest.")
+    var manifest: String = "Package.swift"
+
+    func run() throws {
+        guard let named = try ManifestBundle.read(manifest) else {
+            if version != nil { throw ValidationError("\(manifest) names no CWebRTC bundle: prepare the release first") }
+            print("cwebrtc-bundle: \(manifest) names no bundle yet; nothing to compare")
+            return
+        }
+        let checksum = try swiftPMChecksum(zip)
+        guard named.checksum == checksum else {
+            throw ValidationError("\(manifest)'s CWebRTC checksum is \(named.checksum), but this commit's bundle is \(checksum): run `cwebrtc-bundle prepare` again")
+        }
+        if let version, let repository {
+            let expected = ManifestBundle.url(repository: repository, version: version)
+            guard named.url == expected else { throw ValidationError("\(manifest)'s CWebRTC is \(named.url), not \(expected)") }
+        }
+        print("cwebrtc-bundle: \(manifest) names this bundle (\(checksum))")
+    }
+}
+
+/// The changes/ entries added since the latest release's tag (all of them
+/// before the first).
+enum Notes {
+    static func since(lastRelease: Bool) throws -> String {
+        let before = (try? Shell.output("git", ["describe", "--tags", "--abbrev=0", "--match", "v*"], quiet: true))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let files: [String]
+        if before.isEmpty {
+            files = try FileManager.default.contentsOfDirectory(atPath: "changes").sorted().map { "changes/\($0)" }
+        } else {
+            files = try Shell.output("git", ["diff", "--diff-filter=A", "--name-only", before, "HEAD", "--", "changes/"])
+                .split(separator: "\n").map(String.init)
+        }
+        return try files.filter { $0.hasSuffix(".md") && $0 != "changes/README.md" }
+            .map { try String(contentsOfFile: $0, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: "\n")
+    }
+}
+
+extension Assemble {
+    static func autoVersion() throws -> String {
+        if let named = try ManifestBundle.read("Package.swift"),
+           let range = named.url.range(of: #"/v([0-9]+\.[0-9]+\.[0-9]+)/"#, options: .regularExpression) {
+            return String(named.url[range].dropFirst(2).dropLast())
+        }
+        let line = try String(contentsOfFile: "VERSION", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = line.split(separator: ".")
+        guard parts.count == 3 else { throw ValidationError("VERSION is \(line), not X.Y.0") }
+        return "\(parts[0]).\(parts[1]).1"
     }
 }
 
@@ -357,10 +515,11 @@ enum Shell {
         }
     }
 
-    static func output(_ program: String, _ arguments: [String]) throws -> String {
+    static func output(_ program: String, _ arguments: [String], quiet: Bool = false) throws -> String {
         let process = try make(program, arguments, nil)
         let pipe = Pipe()
         process.standardOutput = pipe
+        if quiet { process.standardError = FileHandle.nullDevice }
         try process.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

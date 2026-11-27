@@ -1,9 +1,13 @@
 name: CI
-# A public repository's CI on GitHub's own runners (~/Developer/AGENTS.md):
-# the package built and tested on Linux, in swift.org's image, on every pull
-# request and every push to main. The Apple backend (LiveKit's WebRTC) is
-# compile-gated to Apple's systems, so Linux builds Communication and
-# CommunicationCore and runs their tests.
+# A public repository's CI on GitHub's own runners (~/Developer/AGENTS.md),
+# on every pull request and every push to main: CWebRTC's bundle rebuilt
+# from this commit (each variant's C loopback on its own runner) and checked
+# against the one Package.swift names (`cwebrtc-bundle verify`: a manifest
+# naming a bundle this commit doesn't reproduce fails), then the package
+# built and tested on Linux over that bundle (`pin --path`), so CI never
+# needs a release's asset before it's published (Docs/releasing.md). The
+# Apple backend (LiveKit's WebRTC) is compile-gated to Apple's systems and
+# is tested at release.
 on:
   pull_request:
   push:
@@ -13,15 +17,77 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+env:
+  # LiveKit's libwebrtc, pinned by SHA-256 in Tools/cwebrtc_bundle/Sources/Pins.swift.
+  LIVEKIT: webrtc-83af826
 
 jobs:
-  linux:
+  variant:
+    strategy:
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 60
+    env:
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: apt-get update -qq && apt-get install -y -qq curl unzip zip
+      - name: The variant
+        run: >-
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle variant
+          --platform "$PLATFORM" --livekit "$LIVEKIT" --out .build/variants
+      - name: CWebRTC's loopback
+        run: |
+          clang -O1 -ICWebRTC/include CWebRTC/test/loopback.c -o .build/loopback \
+            -L".build/variants/$PLATFORM" -lcwebrtc -lpthread -lm -ldl
+          timeout 120 .build/loopback
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: variant-${{ matrix.platform }}
+          path: .build/variants
+          retention-days: 1
+
+  # The bundle, as a release from this commit would carry it, compared with
+  # Package.swift's. Its checksum is in the log and the zip is kept a day,
+  # for a prepare pull request.
+  bundle:
+    needs: variant
     runs-on: ubuntu-24.04
-    container: swift:6.4.2-noble
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - name: Build
-        run: swift build
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: apt-get update -qq && apt-get install -y -qq zip
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { pattern: variant-*, path: .build/downloaded }
+      - run: |
+          swift build --package-path Tools/cwebrtc_bundle
+          tool="$(swift build --package-path Tools/cwebrtc_bundle --show-bin-path)/cwebrtc-bundle"
+          "$tool" assemble --version auto --out .build/CWebRTC.artifactbundle.zip .build/downloaded/*
+          "$tool" verify --zip .build/CWebRTC.artifactbundle.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: bundle, path: .build/CWebRTC.artifactbundle.zip, retention-days: 1 }
+
+  linux:
+    needs: bundle
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: apt-get update -qq && apt-get install -y -qq unzip
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: bundle, path: .build }
+      - name: Build, over this commit's bundle
+        run: |
+          unzip -q .build/CWebRTC.artifactbundle.zip -d .build/bundle
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle pin --path .build/bundle/CWebRTC.artifactbundle
+          swift build --build-tests
       - name: Test
-        run: swift test
+        run: swift test --skip-build
