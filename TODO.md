@@ -1,30 +1,28 @@
 # TODO
 
-Tabled on 2026-11-18, while Convo drops its blockchain parts. Done so far:
-the Swift 6 settings, `CommunicationCore` over `WebRTCHost` (signaling and
-data channels), and the Apple adapter, `LiveKitWebRTCHost`, tested over real
-WebRTC. The plan and its reasons are in `Docs/platforms.md`.
+Resumed on 2026-11-27, with no Isomer dependency (Logan). Done so far: the
+Swift 6 settings, `CommunicationCore` over `WebRTCHost` (signaling and data
+channels), the Apple adapter, `LiveKitWebRTCHost`, tested over real WebRTC,
+and the native route proved on Linux arm64. The plan and its reasons are in
+`Docs/platforms.md`.
 
 ## Platforms
 
-- **Web adapter:** JavaScript over `RTCPeerConnection`, from Convo's
-  `index.html` WebRTC code. It's injected through Isomer's swift_ffi
-  dependencies: a JS module exporting `webRTCHost(Dependencies)`, with a
-  dependency key the core reads on wasm.
-- **Android adapter:** Kotlin over `org.webrtc` (`stream-webrtc-android`), from
-  Convo's `AppServices.kt`. It goes through `isomer_android_app(services_kt =
-  …, services_installer = "CommunicationHost.install()", services_deps = …)`.
-- **The Isomer binding:** a swift_ffi `@ExportedInterface` mirror of
-  `WebRTCHost`, plus the install function and the dependency key. It's Bazel
-  only (swift_ffi isn't in Isomer's Swift package), so Communication becomes
-  a Bazel module too, published to AttilaTheFun/bazel_registry, with
-  filegroups for the JS and the Kotlin.
-- **Linux and Windows adapter:** Swift over a small C shim (`CWebRTCShim`) over
-  libwebrtc's C++ API, using LiveKit's prebuilt static libwebrtc
-  (livekit/rust-sdks `webrtc-<commit>` releases: linux and win, x64 and
-  arm64).
-- **Builds:** cross-compile the core for wasm and Android in CI, as well as
-  Linux and macOS.
+- **CWebRTC:** the C++ shim's C API for data channels (connections, offer
+  and answer, descriptions, candidates, channels, events), compiled against
+  LiveKit's prebuilt libwebrtc and merged into its `libwebrtc.a`.
+- **The bundle:** a CI workflow that builds `CWebRTC.artifactbundle` from a
+  pinned LiveKit release for every native triple (linux x64 and arm64,
+  windows x64 and arm64, android arm, arm64 and x64), and attaches it to a
+  release. `Package.swift` names it by URL and checksum.
+- **`CommunicationNative`:** Swift over CWebRTC, conforming to `WebRTCHost`,
+  with the core's real-WebRTC tests on Linux. Then prove Windows (its C
+  runtime) and Android (a Swift SDK for Android).
+- **`CommunicationWeb`:** Swift over the `communication_webrtc` wasm imports,
+  and `communication_webrtc.js` over `RTCPeerConnection`, from P2PRC's
+  `index.html` WebRTC code, tested in a headless browser.
+- **Builds:** cross-compile for wasm and Android in CI, as well as Linux and
+  macOS.
 
 ## Media
 
@@ -32,12 +30,13 @@ WebRTC. The plan and its reasons are in `Docs/platforms.md`.
   senders and receivers, remote tracks as events). Then `WebRTCConnector`
   shrinks to `LiveKitWebRTCHost`, and the per-file
   `#if canImport(LiveKitWebRTC)` guards go with it.
-- Capture and rendering per platform, in the adapters.
+- Capture and rendering per platform, in the backends. Android's audio
+  needs libwebrtc's JVM and context, which the app passes once.
 
 ## Consumers and release
 
-- Convo moves onto Communication when it moves to current Isomer, and
-  `ConvoHost` drops its WebRTC calls (Convo's TODO.md).
+- P2PRC moves onto Communication on the web and Android, and its own WebRTC
+  glue (`ConvoHost`'s calls, `index.html`'s and `AppServices.kt`'s) goes.
 - LiveKit's published xcframework again once a release includes
   webrtc-sdk/webrtc#318 (`Docs/README.md`, To do).
 - The Apple backend's build and tests in CI (a macOS runner at release
