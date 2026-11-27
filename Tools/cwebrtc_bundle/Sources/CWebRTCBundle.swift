@@ -375,7 +375,10 @@ struct Prepare: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Point Package.swift at the next release's bundle, and add its notes to CHANGELOG.md.")
 
     @Option(help: "The bundle (from `assemble`), reproducible from this commit.")
-    var zip: String
+    var zip: String?
+
+    @Option(help: "Or its SwiftPM checksum, from CI's bundle job for this commit (its log), which CI checks again.")
+    var checksum: String?
 
     @Option(help: "The repository (owner/name), for the URL and its releases.")
     var repository: String
@@ -385,7 +388,14 @@ struct Prepare: ParsableCommand {
 
     func run() throws {
         let version = try self.version ?? NextVersion.next(repository: repository, versionFile: "VERSION")
-        let checksum = try swiftPMChecksum(zip)
+        let checksum: String
+        if let zip {
+            checksum = try swiftPMChecksum(zip)
+        } else if let given = self.checksum, given.count == 64, given.allSatisfy(\.isHexDigit) {
+            checksum = given.lowercased()
+        } else {
+            throw ValidationError("give --zip, or --checksum (64 hex digits)")
+        }
         let url = ManifestBundle.url(repository: repository, version: version)
         try Pin.apply(url: url, checksum: checksum, path: nil, manifest: "Package.swift")
         let notes = try Notes.since(lastRelease: true)
