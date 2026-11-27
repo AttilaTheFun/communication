@@ -11,10 +11,11 @@ always of main's own commit.
 ## The version line
 
 `VERSION` holds the committed line, `X.Y.0`. A release is `vX.Y.N`, one past
-the highest `vX.Y.*` already released or drafted (the first is `X.Y.1`;
-`cwebrtc-bundle next-version`). Once a line has a published release, the
-next proposal needs the line moved on (`X.(Y+1).0`) in a pull request first,
-as P2PRC's line rule has it.
+the highest `vX.Y.*` already released or tagged (the first is `X.Y.1`;
+`cwebrtc-bundle next-version`). With a read-only token it can't see drafts,
+so the Release run's draft step, which can, refuses a version that exists.
+Once a line has a published release, the next proposal needs the line moved
+on (`X.(Y+1).0`) in a pull request first, as P2PRC's line rule has it.
 
 ## What a release carries
 
@@ -65,9 +66,10 @@ itself would notice; one depending on a version never does.
 
 1. `changes/` has an entry for each change since the release before
    (`changes/README.md`).
-2. Build the bundle (`cwebrtc-bundle variant` for each platform, then
-   `assemble`; or take the bundle CI built for the pull request), run
-   `cwebrtc-bundle prepare --zip <it> --repository AttilaTheFun/communication`,
-   and open the pull request. CI confirms the checksum.
+2. Take the checksum CI's bundle job printed for main's commit (or build
+   the bundle: `cwebrtc-bundle variant` for each platform, then
+   `assemble --version auto`), run `cwebrtc-bundle prepare --checksum <it>`
+   (or `--zip <it>`) `--repository AttilaTheFun/communication`, and open
+   the pull request. CI rebuilds the bundle and confirms the checksum.
 3. Once it's merged, dispatch the Release workflow on main.
 4. Manager checks the draft, then Logan publishes it in Shireworks.
