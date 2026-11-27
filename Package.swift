@@ -83,6 +83,6 @@ let package = Package(
 )
 
 // Swift 6 (strict concurrency) everywhere, and no warnings left standing.
-for target in package.targets {
+for target in package.targets where target.type != .binary {
     target.swiftSettings = (target.swiftSettings ?? []) + [.treatAllWarnings(as: .error)]
 }
