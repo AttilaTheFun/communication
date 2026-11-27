@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "CommunicationCore", targets: ["CommunicationCore"]),
         .library(name: "CommunicationWebRTC", targets: ["CommunicationWebRTC"]),
         .library(name: "CommunicationNative", targets: ["CommunicationNative"]),
+        .library(name: "CommunicationWeb", targets: ["CommunicationWeb"]),
     ],
     dependencies: [
         // LiveKit's packaging of Google's WebRTC (class prefix LK): the same
@@ -71,6 +72,15 @@ let package = Package(
         .testTarget(
             name: "CommunicationNativeTests",
             dependencies: ["CommunicationNative", "CommunicationCore"]
+        ),
+        // The web (wasm): the browser's RTCPeerConnection through the
+        // `communication_webrtc` imports (CCommunicationWeb, plain C), which
+        // Web/communication_webrtc.js implements (Docs/platforms.md).
+        // Elsewhere both targets are empty (`#if arch(wasm32)`).
+        .target(name: "CCommunicationWeb"),
+        .target(
+            name: "CommunicationWeb",
+            dependencies: ["Communication", "CommunicationCore", "CCommunicationWeb"]
         ),
         // Examples/: small programs showing the package; not products.
         .executableTarget(
