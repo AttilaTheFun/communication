@@ -55,6 +55,9 @@ the zip has fixed times, sorted entries and no extra attributes.
    bundle and fails closed unless it's the one `Package.swift` names, at
    the URL of the version it's proposing (`verify --version`). Then it tests,
    proves, and drafts `vX.Y.N` of main's commit with the bundle attached.
+   Every job that builds the package (Linux, macOS, and the web test, which
+   takes the package by path) pins the run's bundle first, since SwiftPM
+   fetches every binary target it resolves, on any platform.
 4. **Publish:** Logan publishes it in Shireworks. The tag is made on that
    main commit, and the URL its `Package.swift` names now exists.
 

@@ -128,12 +128,21 @@ jobs:
         with: { name: linux-log, path: linux.log, retention-days: 1 }
 
   # The Apple backend (LiveKit's xcframework).
+  # Over this run's bundle too: Package.swift names the release's asset,
+  # which doesn't exist until it's published, and SwiftPM resolves every
+  # binary target (CWebRTC is Linux's, but it's still fetched here).
   macos:
+    needs: bundle
     if: github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: bundle, path: .build }
+      - run: |
+          unzip -q .build/CWebRTC.artifactbundle.zip -d .build/bundle
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle pin --path .build/bundle/CWebRTC.artifactbundle
       - run: swift build --build-tests
       - shell: bash
         run: set -o pipefail; swift test --skip-build 2>&1 | tee macos.log
@@ -141,19 +150,25 @@ jobs:
         if: always()
         with: { name: macos-log, path: macos.log, retention-days: 1 }
 
-  # The web backend in headless Chromium (Tests/WebLoopback).
+  # The web backend in headless Chromium (Tests/WebLoopback, which takes
+  # Communication by path, so over this run's bundle too, as macos is).
   web:
+    needs: bundle
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: bundle, path: .build }
       # Each download checked against its pinned SHA-256: the wasm SDK's
       # from swift.org's release API, Node's from its SHASUMS256.txt.
       - name: Tools
         run: |
-          apt-get update -qq && apt-get install -y -qq curl xz-utils
+          apt-get update -qq && apt-get install -y -qq curl xz-utils unzip
+          unzip -q .build/CWebRTC.artifactbundle.zip -d .build/bundle
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle pin --path .build/bundle/CWebRTC.artifactbundle
           swift sdk install https://download.swift.org/swift-6.4.2-release/wasm-sdk/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz \
             --checksum 83baca83553f8c443cda7b84800912e6e709c3acd2e7ebf277794ca5836c0da5
           curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz
