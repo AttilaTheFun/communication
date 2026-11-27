@@ -7,9 +7,15 @@
 // of the W3C dictionaries.
 //
 // Threads: every callback runs on libwebrtc's signaling thread. A callback
-// must not call back into this interface, or free what its context points
+// must not call any cw_peer_* function, or free what its context points
 // to; copy what it gives and return. Strings handed to a callback live only
 // for that call.
+//
+// That's not only good manners: on_event runs while the peer's own lock (a
+// std::mutex, not recursive) is held, so a cw_peer_* call from inside it
+// (sending as a channel opens, say) deadlocks its thread. Hand the work to
+// another thread instead, as Communication's NativeWebRTCHost queues its
+// events for Swift tasks.
 //
 // Lifetimes: a peer's on_event and context are used until cw_peer_release
 // returns, and not after. Every cw_result_fn is called exactly once:
