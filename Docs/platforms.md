@@ -139,13 +139,17 @@ backends. Then `WebRTCConnector` shrinks to `LiveKitWebRTCHost`.
    over real WebRTC on macOS: two connections negotiate, open a channel,
    carry text and bytes both ways, and close.
 4. Done (2026-11-27): the native route proved on Linux arm64 (above).
-5. CWebRTC's data-channel API, its bundle built in CI for every native
-   triple, and `CommunicationNative`, with the core's real-WebRTC tests on
-   Linux. Then Windows, then Android.
-6. `CommunicationWeb` and its JavaScript, tested in a headless browser.
-7. P2PRC moves onto Communication on the web and Android, and its own WebRTC
+5. Done (2026-11-27) on Linux arm64: CWebRTC's data-channel API
+   (`CWebRTC/`, with a loopback test in C) and `CommunicationNative`
+   (`NativeWebRTCHost`). Over a locally built bundle, the core's
+   real-WebRTC test passes: two connections negotiate, open a channel,
+   carry text and bytes both ways, and close; so do the core's 8 tests.
+6. The bundle built in CI for every native triple, released, and named in
+   `Package.swift` by URL and checksum. Then Windows, then Android.
+7. `CommunicationWeb` and its JavaScript, tested in a headless browser.
+8. P2PRC moves onto Communication on the web and Android, and its own WebRTC
    glue goes.
-8. Media.
+9. Media.
 
 ## Open questions
 
