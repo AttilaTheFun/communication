@@ -81,7 +81,7 @@ let package = Package(
         .binaryTarget(
             name: "CWebRTC",
             url: "https://github.com/AttilaTheFun/communication/releases/download/v0.2.1/CWebRTC.artifactbundle.zip",
-            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+            checksum: "a1242a616eccafc6fface3e96c2b89db9536bf1079e83239724d8316b7ecb51b"
         ),
         // cwebrtc-bundle: end
         .testTarget(
