@@ -50,7 +50,7 @@ struct Variant: ParsableCommand {
     @Option(help: "The platform (\(Platform.allCases.map(\.rawValue).joined(separator: ", "))).")
     var platform: Platform
 
-    @Option(help: "LiveKit's libwebrtc release (livekit/rust-sdks), e.g. webrtc-83af826.")
+    @Option(help: "LiveKit's libwebrtc release (livekit/rust-sdks), one pinned in Pins.swift, e.g. webrtc-83af826.")
     var livekit: String
 
     @Option(help: "CWebRTC's sources (the repository's CWebRTC folder).")
@@ -73,17 +73,29 @@ struct Variant: ParsableCommand {
 
     func run() throws {
         let fm = FileManager.default
+        // Only a pinned download: what's in it is linked into every program
+        // that uses the package.
+        guard let expected = Pins.sha256[livekit]?[platform] else {
+            throw ValidationError("\(livekit) has no pinned SHA-256 for \(platform.rawValue) in Pins.swift")
+        }
         let work = URL(fileURLWithPath: work).appendingPathComponent("\(livekit)-\(platform.rawValue)")
         let release = work.appendingPathComponent("\(platform.rawValue)-release")
-        if !fm.fileExists(atPath: release.appendingPathComponent("lib/libwebrtc.a").path) {
-            try fm.createDirectory(at: work, withIntermediateDirectories: true)
-            let zip = work.appendingPathComponent("webrtc.zip")
+        let zip = work.appendingPathComponent("webrtc.zip")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: zip.path) {
             let url = "https://github.com/livekit/rust-sdks/releases/download/\(livekit)/webrtc-\(platform.rawValue)-release.zip"
             print("cwebrtc-bundle: downloading \(url)")
             try Shell.run("curl", ["-fsSL", "--retry", "3", "-o", zip.path, url])
-            try Shell.run("unzip", ["-q", "-o", zip.path, "-d", work.path])
-            try? fm.removeItem(at: zip)
         }
+        // Checked every run, the kept download too, before it's unpacked.
+        let actual = try Self.sha256(zip)
+        guard actual == expected else {
+            try? fm.removeItem(at: zip)
+            throw ValidationError("\(zip.lastPathComponent) for \(livekit) \(platform.rawValue) is \(actual), not the pinned \(expected)")
+        }
+        print("cwebrtc-bundle: \(livekit) \(platform.rawValue) matches its pinned SHA-256")
+        try? fm.removeItem(at: release)
+        try Shell.run("unzip", ["-q", "-o", zip.path, "-d", work.path])
         let include = release.appendingPathComponent("include")
         let defines = try Self.defines(release.appendingPathComponent("webrtc.ninja"))
         let sources = URL(fileURLWithPath: sources)
@@ -127,6 +139,16 @@ struct Variant: ParsableCommand {
         let description = VariantDescription(platform: platform.rawValue, triple: platform.triple, livekit: livekit)
         try JSONEncoder.pretty.encode(description).write(to: variant.appendingPathComponent("variant.json"))
         print("cwebrtc-bundle: \(platform.rawValue) in \(variant.path)")
+    }
+
+    /// A file's SHA-256, hex, by coreutils' sha256sum (Swift's image has it;
+    /// Foundation has no hash on Linux).
+    static func sha256(_ file: URL) throws -> String {
+        let line = try Shell.output("sha256sum", [file.path])
+        guard let hash = line.split(separator: " ").first, hash.count == 64 else {
+            throw ValidationError("sha256sum gave \(line)")
+        }
+        return String(hash)
     }
 
     /// libwebrtc's own defines, from its build's webrtc.ninja, which the
