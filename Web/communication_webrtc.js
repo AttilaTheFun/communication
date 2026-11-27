@@ -30,7 +30,7 @@ const Kind = {
 };
 
 // The largest message handed to the module: a remote can't make it copy
-// more than this into its memory at once. Bigger ones are dropped.
+// more than this into its memory at once. A bigger one closes its channel.
 const maxMessage = 16 * 1024 * 1024;
 
 export class CommunicationWebRTC {
@@ -119,7 +119,13 @@ export class CommunicationWebRTC {
         this.exports.communication_webrtc_event(id, kind, c[0], c[1], t[0], t[1], d[0], d[1]);
       });
     } catch (error) {
+      // A trap means the module is broken: it goes on up, not swallowed
+      // with the module's state half-changed.
+      if (error instanceof WebAssembly.RuntimeError) throw error;
       console.error("communication_webrtc: an event was lost:", error);
+      // The end of a connection still reaches the module, with nothing to
+      // write, so its pulls don't wait for ever.
+      if (kind === Kind.closed) this.exports.communication_webrtc_event(id, kind, 0, 0, 0, 0, 0, 0);
     }
   }
 
@@ -200,23 +206,39 @@ export class CommunicationWebRTC {
       return false;
     }
     const old = entry.channels.get(label);
-    if (old) old.onopen = old.onclose = old.onclosing = old.onerror = old.onmessage = null;
+    if (old) {
+      old.onopen = old.onclose = old.onclosing = old.onerror = old.onmessage = null;
+      if (old.readyState !== "closed") old.close();
+    }
     channel.binaryType = "arraybuffer";
     entry.channels.set(label, channel);
+    // Each state once: an error (which may come while open or closing)
+    // reports only a change, so the core never sees "open" twice.
+    let reported = null;
     const state = () => {
-      if (entry.channels.get(label) === channel) this.event(id, Kind.channelState, label, channel.readyState);
+      if (entry.channels.get(label) !== channel || channel.readyState === reported) return;
+      reported = channel.readyState;
+      this.event(id, Kind.channelState, label, reported);
     };
     channel.onopen = state;
     channel.onclosing = state;
     channel.onclose = state;
     // A channel the remote fails or drops ends as closed, reported.
     channel.onerror = state;
+    // A message over maxMessage closes the channel, said in the console:
+    // the peer is sending more than the module takes.
+    const tooBig = (size) => {
+      console.warn(`communication_webrtc: a ${size}-byte message on ${label} is over ${maxMessage}; the channel is closed`);
+      channel.close();
+    };
     channel.onmessage = (e) => {
       if (typeof e.data === "string") {
         // The UTF-8 once, in data, as CWebRTC sends a text message.
         const utf8 = new TextEncoder().encode(e.data);
-        if (utf8.length <= maxMessage) this.event(id, Kind.textMessage, label, "", utf8);
-      } else if (e.data.byteLength <= maxMessage) {
+        if (utf8.length > maxMessage) return tooBig(utf8.length);
+        this.event(id, Kind.textMessage, label, "", utf8);
+      } else {
+        if (e.data.byteLength > maxMessage) return tooBig(e.data.byteLength);
         this.event(id, Kind.dataMessage, label, "", new Uint8Array(e.data));
       }
     };
