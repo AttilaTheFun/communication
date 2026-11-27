@@ -1,0 +1,1 @@
+- `CommunicationNative` for Linux (x64 and arm64): `NativeWebRTCHost` over CWebRTC, a C interface over LiveKit's prebuilt static libwebrtc, which SwiftPM downloads as this release's `CWebRTC.artifactbundle.zip` (SE-0482). Nothing to install. Android is proved and its variants come next; Windows waits on a libwebrtc built for Swift's C runtime.

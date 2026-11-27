@@ -1,0 +1,241 @@
+name: Release
+# Communication's release proposal (Docs/releasing.md), dispatched on main:
+# CWebRTC's bundle built from LiveKit's pinned libwebrtc (each variant's C
+# loopback on its own runner), the tests on Linux (over that bundle), macOS
+# and the web, their results the release's proof (build_tools' tests-proof,
+# compared with the release before's), then the release commit on
+# releases/vX.Y.N (Package.swift naming this release's bundle, and
+# CHANGELOG.md) and a draft vX.Y.N of it, with the bundle, SHA256SUMS, the
+# proof and notes from changes/. Logan publishes it in Shireworks. The
+# repository is public: GitHub's runners alone.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  # The shared tools, by tag (AttilaTheFun/build_tools).
+  BUILD_TOOLS_VERSION: v0.4.2
+  # LiveKit's libwebrtc, pinned by SHA-256 in Tools/cwebrtc_bundle/Sources/Pins.swift.
+  LIVEKIT: webrtc-83af826
+jobs:
+  variant:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 60
+    env:
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: apt-get update -qq && apt-get install -y -qq curl unzip zip
+      - name: The variant
+        run: >-
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle variant
+          --platform "$PLATFORM" --livekit "$LIVEKIT" --out .build/variants
+      - name: CWebRTC's loopback
+        shell: bash
+        run: |
+          set -o pipefail
+          clang -O1 -ICWebRTC/include CWebRTC/test/loopback.c -o .build/loopback \
+            -L".build/variants/$PLATFORM" -lcwebrtc -lpthread -lm -ldl
+          timeout 120 .build/loopback 2>&1 | tee "loopback-$PLATFORM.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: variant-${{ matrix.platform }}
+          path: .build/variants
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with: { name: "loopback-${{ matrix.platform }}-log", path: "loopback-${{ matrix.platform }}.log", retention-days: 1 }
+
+  bundle:
+    needs: variant
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      checksum: ${{ steps.bundle.outputs.checksum }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { fetch-depth: 0 }
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl unzip zip gpg
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+          apt-get update -qq && apt-get install -y -qq gh
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # VERSION's line, one past its highest release or tag; a line with a
+      # published release is refused.
+      - id: version
+        run: |
+          swift build --package-path Tools/cwebrtc_bundle
+          tool="$(swift build --package-path Tools/cwebrtc_bundle --show-bin-path)/cwebrtc-bundle"
+          echo "version=$("$tool" next-version --repository "$GITHUB_REPOSITORY")" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { pattern: variant-*, path: .build/downloaded }
+      - id: bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle assemble \
+            --version "$VERSION" --out .build/CWebRTC.artifactbundle.zip .build/downloaded/*
+          echo "checksum=$(cat .build/CWebRTC.artifactbundle.zip.checksum)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: bundle, path: .build/CWebRTC.artifactbundle.zip, retention-days: 1 }
+
+  # The package on Linux over this run's own bundle, as its users will get
+  # it: the core's tests and the native backend's over real WebRTC.
+  linux:
+    needs: bundle
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: apt-get update -qq && apt-get install -y -qq unzip
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: bundle, path: .build }
+      - run: |
+          unzip -q .build/CWebRTC.artifactbundle.zip -d .build/bundle
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle pin --path .build/bundle/CWebRTC.artifactbundle
+          swift build --build-tests
+      - shell: bash
+        run: set -o pipefail; swift test --skip-build 2>&1 | tee linux.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with: { name: linux-log, path: linux.log, retention-days: 1 }
+
+  # The Apple backend (LiveKit's xcframework).
+  macos:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: swift build --build-tests
+      - shell: bash
+        run: set -o pipefail; swift test --skip-build 2>&1 | tee macos.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with: { name: macos-log, path: macos.log, retention-days: 1 }
+
+  # The web backend in headless Chromium (Tests/WebLoopback).
+  web:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl xz-utils
+          curl -fsSL -o /tmp/wasm.tar.gz https://download.swift.org/swift-6.4.2-release/wasm-sdk/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz
+          swift sdk install /tmp/wasm.tar.gz
+          curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz
+          tar xf /tmp/node.tar.xz -C /opt && echo "/opt/node-v22.12.0-linux-x64/bin" >> "$GITHUB_PATH"
+      - working-directory: Tests/WebLoopback
+        run: |
+          swift package --swift-sdk swift-6.4.2-RELEASE_wasm js --use-cdn --product WebLoopback
+          ln -sfn ../.build/plugins/PackageToJS/outputs/Package Page/Package
+          cp ../../Web/communication_webrtc.js Page/
+      - working-directory: Tests/WebLoopback/Page
+        shell: bash
+        run: |
+          set -o pipefail
+          npm install --silent
+          npx playwright install --with-deps chromium
+          node run.mjs 2>&1 | tee "$GITHUB_WORKSPACE/web.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with: { name: web-log, path: web.log, retention-days: 1 }
+
+  proof:
+    needs: [variant, bundle, linux, macos, web]
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.bundle.outputs.version }}
+      # proof-diff reads the release before's proof.zip (contents: read).
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { pattern: "*-log", path: logs, merge-multiple: true }
+      - shell: bash
+        run: |
+          git clone --quiet --depth 1 --branch "$BUILD_TOOLS_VERSION" https://github.com/AttilaTheFun/build_tools.git "$RUNNER_TEMP/build_tools"
+          swift build -c release --package-path "$RUNNER_TEMP/build_tools" --product tests-proof
+          swift build -c release --package-path "$RUNNER_TEMP/build_tools" --product proof-diff
+          bin="$(swift build -c release --package-path "$RUNNER_TEMP/build_tools" --show-bin-path)"
+          # tests-proof reads swift test logs; the C loopbacks and the web
+          # loopback gate the release (this job needs theirs) and are named
+          # in the notes.
+          "$bin/tests-proof" --out proof --zip proof.zip --app communication --version "$VERSION" \
+            "linux=Linux (Swift 6.4.2, this release's bundle)=logs/linux.log" "macos=macOS 26=logs/macos.log"
+          "$bin/proof-diff" make proof.zip --out proof-diff.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: release-files, retention-days: 1, path: "proof.zip\nproof-diff.json" }
+
+  # The release commit (Package.swift naming this release's bundle, and the
+  # notes at the top of CHANGELOG.md) on releases/vX.Y.N, and the draft of it.
+  propose:
+    needs: [bundle, proof]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    container: swift:6.4.2-noble@sha256:23d9b28ad97fb1cf1999edc3a0cb265ee915ed42299a9344e7173d5a6d2b05f4
+    timeout-minutes: 15
+    permissions:
+      # The release branch, the draft and its assets.
+      contents: write
+    env:
+      VERSION: ${{ needs.bundle.outputs.version }}
+      CHECKSUM: ${{ needs.bundle.outputs.checksum }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { fetch-depth: 0 }
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl gpg
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+          apt-get update -qq && apt-get install -y -qq gh
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: bundle, path: release }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: release-files, path: release }
+      - name: The release commit and the draft
+        shell: bash
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::the version is N.N.N"; exit 1; }
+          [[ "$CHECKSUM" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::no checksum"; exit 1; }
+          ! gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || { echo "::error::v$VERSION exists"; exit 1; }
+          before="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -n "$before" ]; then mapfile -t added < <(git diff --diff-filter=A --name-only "$before" HEAD -- changes/); else added=(changes/*.md); fi
+          { for f in "${added[@]}"; do [ -f "$f" ] && [ "$f" != changes/README.md ] && cat "$f"; done; } > notes.md
+          swift run --package-path Tools/cwebrtc_bundle cwebrtc-bundle pin \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/CWebRTC.artifactbundle.zip" --checksum "$CHECKSUM"
+          { head -n 3 CHANGELOG.md; echo; echo "## $VERSION"; echo; cat notes.md; tail -n +4 CHANGELOG.md; } > CHANGELOG.new && mv CHANGELOG.new CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "releases/v$VERSION"
+          git add Package.swift CHANGELOG.md
+          git commit -m "Release $VERSION: Package.swift names this release's CWebRTC bundle ($CHECKSUM), and CHANGELOG.md"
+          git push origin "releases/v$VERSION"
+          (cd release && sha256sum CWebRTC.artifactbundle.zip proof.zip proof-diff.json > SHA256SUMS)
+          { cat notes.md; echo; echo "Proposed from $GITHUB_SHA by run $GITHUB_RUN_ID, as the release commit $(git rev-parse HEAD) on releases/v$VERSION (Package.swift naming this release's CWebRTC.artifactbundle.zip, checksum $CHECKSUM). Its proof (proof.zip) is its tests' results on Linux (over this bundle) and macOS, compared with the release before's (proof-diff.json); CWebRTC's C loopback on each variant and the web backend's loopback in headless Chromium passed too."; } > release-notes.md
+          gh release create "v$VERSION" -R "$GITHUB_REPOSITORY" --draft --target "$(git rev-parse HEAD)" --title "Communication $VERSION" \
+            --notes-file release-notes.md release/CWebRTC.artifactbundle.zip release/SHA256SUMS release/proof.zip release/proof-diff.json

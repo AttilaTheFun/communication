@@ -194,6 +194,9 @@ backends. Then `WebRTCConnector` shrinks to `LiveKitWebRTCHost`.
   downloads once per checksum. Trimming what the shim doesn't use (desktop
   capture, PipeWire, H.265) means building libwebrtc ourselves rather than
   taking LiveKit's release. That's for later, if the size matters.
+- **Windows is parked (Logan, 2026-11-27)** until Nimbus' Studio has room:
+  then it builds our own libwebrtc for Windows with `/MD` there, and Windows
+  joins the bundle as Linux and Android do. Why:
 - **Windows' C runtime (checked 2026-11-27: it doesn't match).** LiveKit's
   Windows libwebrtc (`webrtc-83af826`, win-x64: clang-cl, MSVC's STL,
   `use_custom_libcxx = false`) is built with the static C runtime: its

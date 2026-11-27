@@ -1,0 +1,1 @@
+- Communication on every platform with no dependency beyond WebRTC itself: `CommunicationCore` implements the API once over `WebRTCHost`, a small plain-Swift protocol, and each platform supplies a host.
