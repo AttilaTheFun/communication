@@ -1,8 +1,9 @@
 // CWebRTC's loopback test, in C so it uses only the C interface: two peers
 // in one process negotiate, trade candidates, open a channel, and send text
-// and bytes each way. Then b opens a second channel with the same label,
-// which replaces the first on both sides (a freed observer would crash
-// here), and text crosses again on it. Exits 0 when every message arrived.
+// and bytes each way. Then labels in use: b's own second "chat" is refused,
+// and when both open "dup" at once each side closes the remote's copy, so
+// a peer can't take over a channel by its label; "chat" still carries text
+// after. Exits 0 when every message arrived.
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -182,25 +183,28 @@ int main(void) {
         fprintf(stderr, "not every message arrived\n");
         return 1;
     }
-    // b's own "chat": on a it's a second channel with the label in use.
-    pthread_mutex_lock(&lock);
-    a.open = b.open = 0;
-    pthread_mutex_unlock(&lock);
-    if (cw_peer_open_channel(b.peer, "chat", &channel, error, sizeof error) != 0) {
-        fprintf(stderr, "second channel failed: %s\n", error);
+    // A second "chat" of b's own: its label is in use.
+    if (cw_peer_open_channel(b.peer, "chat", &channel, error, sizeof error) == 0) {
+        fprintf(stderr, "a second channel named chat was opened\n");
         return 1;
     }
-    if (!until(both_open, &a, &b)) {
-        fprintf(stderr, "the second channel didn't open\n");
+    printf("b: second chat refused: %s\n", error);
+    // Both open "dup" at once: each side's copy from the other collides
+    // with its own, and is closed.
+    if (cw_peer_open_channel(a.peer, "dup", &channel, error, sizeof error) != 0 ||
+        cw_peer_open_channel(b.peer, "dup", &channel, error, sizeof error) != 0) {
+        fprintf(stderr, "dup failed: %s\n", error);
         return 1;
     }
+    struct timespec settle = {1, 0};
+    nanosleep(&settle, NULL);
     if (cw_peer_send(a.peer, "chat", (const uint8_t *)"a again", 7, 0) != 0 ||
         cw_peer_send(b.peer, "chat", (const uint8_t *)"b again", 7, 0) != 0) {
-        fprintf(stderr, "send on the second channel failed\n");
+        fprintf(stderr, "chat stopped working after dup\n");
         return 1;
     }
     if (!until(again_received, &a, &b)) {
-        fprintf(stderr, "the second channel's messages didn't arrive\n");
+        fprintf(stderr, "chat's messages after dup didn't arrive\n");
         return 1;
     }
     cw_peer_release(a.peer);

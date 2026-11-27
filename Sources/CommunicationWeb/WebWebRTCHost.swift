@@ -176,8 +176,11 @@ private final class WebBridge: @unchecked Sendable {
             pointer.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: length), as: UTF8.self) } ?? ""
         }
         let bytes = data.map { [UInt8](UnsafeBufferPointer(start: $0, count: dataLength)) } ?? []
+        // A text message's UTF-8 comes once, in data, as CWebRTC's does.
+        let isText = kind == WebRTCHostEvent.Kind.textMessage.rawValue
         queue?.post(WebRTCHostEvent(kind: kind, channel: string(channel, channelLength),
-                                    text: string(text, textLength), data: bytes))
+                                    text: isText ? String(decoding: bytes, as: UTF8.self) : string(text, textLength),
+                                    data: isText ? [] : bytes))
     }
 }
 

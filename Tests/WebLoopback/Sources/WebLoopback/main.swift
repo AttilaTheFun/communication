@@ -16,8 +16,10 @@ JavaScriptEventLoop.installGlobalExecutor()
 }
 
 /// Two connections in one page over the browser's WebRTC: negotiated with
-/// complete descriptions, a channel opened, text and bytes both ways, then
-/// a second channel with the same label from the other side, and close.
+/// complete descriptions, a channel opened, text and bytes both ways; then
+/// labels in use (a second local "chat" refused, and both sides opening
+/// "dup" at once, each closing the other's copy) with "chat" still
+/// carrying text after; and close.
 @MainActor func loopback() async throws {
     let connector = HostConnector(host: WebWebRTCHost())
     let config = CommunicationConfiguration(iceServers: [])
@@ -46,6 +48,19 @@ JavaScriptEventLoop.installGlobalExecutor()
         $0 == .dataChannelMessage(label: "chat", message: .binary(Data([1, 2, 3])))
     }
 
+    // A second "chat" of the callee's own: refused, its label in use.
+    if (try? await callee.openDataChannel(label: "chat")) != nil { throw Failure("a second chat was opened") }
+    print("web loopback: a second chat is refused")
+    // Both open "dup" at once: each side's copy from the other collides
+    // with its own and is closed; "chat" goes on.
+    try await caller.openDataChannel(label: "dup")
+    try await callee.openDataChannel(label: "dup")
+    try await Task.sleep(nanoseconds: 1_000_000_000)
+    try await caller.send(text: "after dup")
+    try await expect(calleeEvents, "chat carries text after dup") {
+        $0 == .dataChannelMessage(label: "chat", message: .text("after dup"))
+    }
+
     await caller.close()
     await callee.close()
     guard await callerEvents.waitForEnd() else { throw Failure("closing didn't end the events") }
@@ -56,6 +71,7 @@ func gathered(_ peer: any CommunicationPeerConnection) async throws {
         if await peer.iceGatheringState == .complete { return }
         try await Task.sleep(nanoseconds: 50_000_000)
     }
+    throw Failure("ICE gathering didn't complete in 10 s")
 }
 
 func expect(_ events: Events, _ what: String, _ predicate: @escaping @Sendable (CommunicationEvent) -> Bool) async throws {

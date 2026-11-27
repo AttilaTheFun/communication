@@ -19,6 +19,9 @@
 // page): pass `webrtc.imports` under "communication_webrtc", and the
 // instance's exports to `attach`. Values cross as UTF-8 in the module's
 // memory: W3C JSON, and bytes for binary messages.
+//
+// Pointers and lengths are wasm32's unsigned 32-bit values, read with
+// `>>> 0` so memory past 2 GB works.
 
 // WebRTCHostEvent.Kind's numbers.
 const Kind = {
@@ -26,24 +29,43 @@ const Kind = {
   candidate: 5, negotiationNeeded: 7, channelState: 8, textMessage: 9, dataMessage: 10,
 };
 
+// The largest message handed to the module: a remote can't make it copy
+// more than this into its memory at once. Bigger ones are dropped.
+const maxMessage = 16 * 1024 * 1024;
+
 export class CommunicationWebRTC {
   constructor() {
     this.source = null;
     this.connections = new Map();
     this.nextID = 1;
-    const self = this;
+    // Each import guarded: a synchronous throw (bad memory, a closed
+    // connection) gives the import's failure value, or a failed result for
+    // its token, rather than unwinding into the module and stranding a
+    // continuation.
+    const guarded = (failure, body) => (...args) => {
+      try {
+        return body(...args.map((a) => (typeof a === "number" ? a >>> 0 : a)));
+      } catch (error) {
+        console.error("communication_webrtc:", error);
+        return failure(...args);
+      }
+    };
+    const failed = (token) => (...args) => {
+      this.resultSafely(args[token] >>> 0, false, "The browser's WebRTC failed.");
+    };
     this.imports = {
-      create: (pointer, length) => self.create(self.read(pointer, length)),
-      offer: (id, answer, pointer, length, token) => self.offer(id, answer, self.read(pointer, length), token),
-      set_description: (id, local, pointer, length, token) => self.setDescription(id, local, self.read(pointer, length), token),
-      local_description: (id, token) => self.localDescription(id, token),
-      add_candidate: (id, pointer, length, token) => self.addCandidate(id, self.read(pointer, length), token),
-      restart_ice: (id) => self.connections.get(id)?.pc.restartIce(),
-      open_channel: (id, label, labelLength, init, initLength) =>
-        self.openChannel(id, self.read(label, labelLength), self.read(init, initLength)),
-      send: (id, label, labelLength, pointer, length, binary) =>
-        self.send(id, self.read(label, labelLength), self.bytes(pointer, length), binary),
-      close: (id) => self.close(id),
+      create: guarded(() => -1, (pointer, length) => this.create(this.read(pointer, length))),
+      offer: guarded(failed(4), (id, answer, pointer, length, token) => this.offer(id, answer, this.read(pointer, length), token)),
+      set_description: guarded(failed(4), (id, local, pointer, length, token) =>
+        this.setDescription(id, local, this.read(pointer, length), token)),
+      local_description: guarded(failed(1), (id, token) => this.localDescription(id, token)),
+      add_candidate: guarded(failed(3), (id, pointer, length, token) => this.addCandidate(id, this.read(pointer, length), token)),
+      restart_ice: guarded(() => {}, (id) => this.connections.get(id)?.pc.restartIce()),
+      open_channel: guarded(() => -1, (id, label, labelLength, init, initLength) =>
+        this.openChannel(id, this.read(label, labelLength), this.read(init, initLength))),
+      send: guarded(() => -1, (id, label, labelLength, pointer, length, binary) =>
+        this.send(id, this.read(label, labelLength), this.bytes(pointer, length), binary)),
+      close: guarded(() => {}, (id) => this.close(id)),
     };
   }
 
@@ -60,48 +82,75 @@ export class CommunicationWebRTC {
   // MARK: Memory
 
   read(pointer, length) {
-    return new TextDecoder().decode(new Uint8Array(this.exports.memory.buffer, pointer, length));
+    return new TextDecoder().decode(new Uint8Array(this.exports.memory.buffer, pointer >>> 0, length >>> 0));
   }
 
   bytes(pointer, length) {
-    return new Uint8Array(this.exports.memory.buffer, pointer, length).slice();
+    return new Uint8Array(this.exports.memory.buffer, pointer >>> 0, length >>> 0).slice();
   }
 
   // Copies bytes into the module's memory for one call: [pointer, length].
-  // The pointer is freed by the caller after the call.
+  // Throws when the module can't allocate them (it answers 0).
   write(bytes) {
-    const pointer = this.exports.communication_webrtc_alloc(bytes.length);
+    const pointer = this.exports.communication_webrtc_alloc(bytes.length) >>> 0;
+    if (pointer === 0) throw new Error(`The module couldn't allocate ${bytes.length} bytes.`);
     new Uint8Array(this.exports.memory.buffer, pointer, bytes.length).set(bytes);
     return [pointer, bytes.length];
+  }
+
+  // Runs call with each of buffers written into the module's memory, and
+  // frees what was written, whatever happens.
+  withWritten(buffers, call) {
+    const written = [];
+    try {
+      for (const buffer of buffers) written.push(this.write(buffer));
+      call(written);
+    } finally {
+      for (const [pointer] of written) this.exports.communication_webrtc_free(pointer);
+    }
   }
 
   // MARK: To the module
 
   event(id, kind, channel = "", text = "", data = null) {
     const encoder = new TextEncoder();
-    const parts = [encoder.encode(channel), encoder.encode(text), data ?? new Uint8Array(0)].map((b) => this.write(b));
     try {
-      this.exports.communication_webrtc_event(id, kind, ...parts[0], ...parts[1], ...parts[2]);
-    } finally {
-      for (const [pointer] of parts) this.exports.communication_webrtc_free(pointer);
+      this.withWritten([encoder.encode(channel), encoder.encode(text), data ?? new Uint8Array(0)], ([c, t, d]) => {
+        this.exports.communication_webrtc_event(id, kind, c[0], c[1], t[0], t[1], d[0], d[1]);
+      });
+    } catch (error) {
+      console.error("communication_webrtc: an event was lost:", error);
     }
   }
 
   result(token, ok, text) {
-    const [pointer, length] = this.write(new TextEncoder().encode(text));
-    try {
+    this.withWritten([new TextEncoder().encode(text)], ([[pointer, length]]) => {
       this.exports.communication_webrtc_result(token, ok ? 1 : 0, pointer, length);
-    } finally {
-      this.exports.communication_webrtc_free(pointer);
+    });
+  }
+
+  // A result that can't be written at all (no memory) still ends its call:
+  // a failure with no text.
+  resultSafely(token, ok, text) {
+    try {
+      this.result(token, ok, text);
+    } catch {
+      try {
+        this.exports.communication_webrtc_result(token, 0, 0, 0);
+      } catch (error) {
+        console.error("communication_webrtc: a result was lost:", error);
+      }
     }
   }
 
   async settle(token, work) {
+    let outcome;
     try {
-      this.result(token, true, (await work()) ?? "");
+      outcome = [true, (await work()) ?? ""];
     } catch (error) {
-      this.result(token, false, String(error?.message ?? error));
+      outcome = [false, String(error?.message ?? error)];
     }
+    this.resultSafely(token, ...outcome);
   }
 
   // MARK: Connections
@@ -109,7 +158,9 @@ export class CommunicationWebRTC {
   create(configuration) {
     let pc;
     try {
-      // `native` is libwebrtc's alone, and so is the "noHost" policy.
+      // `native` is libwebrtc's alone, and so is the "noHost" ICE transport
+      // policy: browsers have only "all" and "relay", so "noHost" is "all"
+      // here (host candidates included).
       const { native, ...rtc } = JSON.parse(configuration);
       if (rtc.iceTransportPolicy !== "relay") rtc.iceTransportPolicy = "all";
       pc = new RTCPeerConnection(rtc);
@@ -127,21 +178,30 @@ export class CommunicationWebRTC {
       if (e.candidate) this.event(id, Kind.candidate, "", JSON.stringify(e.candidate.toJSON()));
     };
     pc.onnegotiationneeded = () => this.event(id, Kind.negotiationNeeded);
-    pc.ondatachannel = (e) => this.adopt(id, entry, e.channel);
+    pc.ondatachannel = (e) => this.adopt(id, entry, e.channel, true);
     return id;
   }
 
-  // A channel, named by its label as WebRTCHost names them: one with a
-  // label in use replaces the old, which is closed and reported first.
-  adopt(id, entry, channel) {
-    channel.binaryType = "arraybuffer";
+  // Whether a channel named label is open (in any state but closed).
+  labelInUse(entry, label) {
+    const channel = entry.channels.get(label);
+    return channel !== undefined && channel.readyState !== "closed";
+  }
+
+  // Channels are named by label (as WebRTCHost names them), one at a time,
+  // as CWebRTC has it: a local one with a label in use is refused by
+  // openChannel, and a remote one is closed here, unannounced, so a peer
+  // can't take over or close the app's channels by reusing their labels.
+  // A label is free again once its channel has closed.
+  adopt(id, entry, channel, remote) {
     const label = channel.label;
-    const old = entry.channels.get(label);
-    if (old && old !== channel) {
-      old.onopen = old.onclose = old.onclosing = old.onmessage = null;
-      old.close();
-      this.event(id, Kind.channelState, label, "closed");
+    if (remote && this.labelInUse(entry, label)) {
+      channel.close();
+      return false;
     }
+    const old = entry.channels.get(label);
+    if (old) old.onopen = old.onclose = old.onclosing = old.onerror = old.onmessage = null;
+    channel.binaryType = "arraybuffer";
     entry.channels.set(label, channel);
     const state = () => {
       if (entry.channels.get(label) === channel) this.event(id, Kind.channelState, label, channel.readyState);
@@ -149,15 +209,19 @@ export class CommunicationWebRTC {
     channel.onopen = state;
     channel.onclosing = state;
     channel.onclose = state;
+    // A channel the remote fails or drops ends as closed, reported.
+    channel.onerror = state;
     channel.onmessage = (e) => {
       if (typeof e.data === "string") {
+        // The UTF-8 once, in data, as CWebRTC sends a text message.
         const utf8 = new TextEncoder().encode(e.data);
-        this.event(id, Kind.textMessage, label, e.data, utf8);
-      } else {
+        if (utf8.length <= maxMessage) this.event(id, Kind.textMessage, label, "", utf8);
+      } else if (e.data.byteLength <= maxMessage) {
         this.event(id, Kind.dataMessage, label, "", new Uint8Array(e.data));
       }
     };
     state();
+    return true;
   }
 
   offer(id, answer, options, token) {
@@ -198,11 +262,11 @@ export class CommunicationWebRTC {
 
   openChannel(id, label, configuration) {
     const entry = this.connections.get(id);
-    if (!entry) return -1;
+    if (!entry || this.labelInUse(entry, label)) return -1;
     try {
       const init = JSON.parse(configuration || "{}");
       for (const key of Object.keys(init)) if (init[key] === null) delete init[key];
-      this.adopt(id, entry, entry.pc.createDataChannel(label, init));
+      this.adopt(id, entry, entry.pc.createDataChannel(label, init), false);
       return 0;
     } catch {
       return -1;
@@ -224,8 +288,15 @@ export class CommunicationWebRTC {
     const entry = this.connections.get(id);
     if (!entry || entry.closed) return;
     entry.closed = true;
-    for (const channel of entry.channels.values()) channel.close();
-    entry.pc.close();
+    // Nothing more comes from the browser for it: its handlers go first.
+    for (const channel of entry.channels.values()) {
+      channel.onopen = channel.onclose = channel.onclosing = channel.onerror = channel.onmessage = null;
+      channel.close();
+    }
+    const pc = entry.pc;
+    pc.onsignalingstatechange = pc.oniceconnectionstatechange = pc.onconnectionstatechange = null;
+    pc.onicegatheringstatechange = pc.onicecandidate = pc.onnegotiationneeded = pc.ondatachannel = null;
+    pc.close();
     this.connections.delete(id);
     this.event(id, Kind.connectionState, "", "closed");
     this.event(id, Kind.closed);
